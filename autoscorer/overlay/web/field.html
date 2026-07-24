@@ -1,0 +1,104 @@
+<title>AutoScorer Field</title>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body.picker {
+    background: #fff; color: #1a1a1a; font-family: -apple-system, "Segoe UI", sans-serif;
+    padding: 20px; max-width: 720px; margin: 0 auto;
+  }
+  .picker h1 { font-size: 18px; }
+  .picker p { font-size: 13px; color: #555; }
+  .picker table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .picker th, .picker td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eee; }
+  .picker code { background: #f3f3f3; padding: 2px 5px; border-radius: 4px; }
+  .picker button { font-size: 12px; padding: 3px 8px; cursor: pointer; }
+  #field {
+    display: inline-block; white-space: nowrap;
+    font-family: -apple-system, "Segoe UI", sans-serif;
+    font-weight: 700; color: #fff; font-size: 48px;
+  }
+</style>
+
+<div id="field"></div>
+<div id="picker" class="picker" style="display:none">
+  <h1>AutoScorer &mdash; Overlay Field Picker</h1>
+  <p>
+    This page renders one live value at a time with a transparent background,
+    for use as an individual OBS Browser Source positioned over your own
+    graphic. Add <code>?key=&lt;field&gt;</code> to the URL (optionally with
+    <code>&amp;size=64&amp;color=%23ffffff&amp;weight=700&amp;font=Arial</code>).
+    Below are the fields available right now, with their current value.
+  </p>
+  <table>
+    <thead><tr><th>Field</th><th>Current value</th><th>URL</th><th></th></tr></thead>
+    <tbody id="pickerRows"></tbody>
+  </table>
+</div>
+
+<script>
+  const params = new URLSearchParams(location.search);
+  const key = params.get("key");
+
+  function getPath(obj, path) {
+    return path.split(".").reduce((acc, part) => (acc == null ? undefined : acc[part]), obj);
+  }
+
+  function formatValue(v) {
+    if (v === null || v === undefined) return "";
+    return String(v);
+  }
+
+  function fieldUrl(fieldKey) {
+    const url = new URL(location.href);
+    url.search = "";
+    url.searchParams.set("key", fieldKey);
+    return url.toString();
+  }
+
+  function renderPicker(state) {
+    document.body.classList.add("picker");
+    document.getElementById("picker").style.display = "block";
+    const staticFields = ["turn_number", "last_player", "last_move_type", "last_word", "last_points", "bag_count"];
+    const playerFields = Object.keys(state.scores || {}).map((p) => `scores.${p}`);
+    const rows = document.getElementById("pickerRows");
+    rows.innerHTML = "";
+    for (const f of [...staticFields, ...playerFields]) {
+      const tr = document.createElement("tr");
+      const url = fieldUrl(f);
+      tr.innerHTML = `
+        <td><code>${f}</code></td>
+        <td>${formatValue(getPath(state, f))}</td>
+        <td><code>${url}</code></td>
+        <td><button type="button">Copy</button></td>
+      `;
+      tr.querySelector("button").onclick = () => navigator.clipboard.writeText(url);
+      rows.appendChild(tr);
+    }
+  }
+
+  function renderField(state) {
+    const el = document.getElementById("field");
+    el.style.fontSize = (params.get("size") || "48") + "px";
+    el.style.color = params.get("color") || "#fff";
+    el.style.fontWeight = params.get("weight") || "700";
+    if (params.get("font")) el.style.fontFamily = params.get("font");
+    el.textContent = formatValue(getPath(state, key));
+  }
+
+  function render(state) {
+    if (key) {
+      renderField(state);
+    } else {
+      renderPicker(state);
+    }
+  }
+
+  function connect() {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const ws = new WebSocket(`${proto}://${location.host}/ws/overlay`);
+    ws.onmessage = (event) => render(JSON.parse(event.data));
+    ws.onclose = () => setTimeout(connect, 1500);
+    ws.onerror = () => ws.close();
+  }
+
+  connect();
+</script>

@@ -1,0 +1,176 @@
+<title>AutoScorer Operator</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", sans-serif; max-width: 900px; margin: 24px auto; padding: 0 16px; color: #1a1a1a; background: #fff; }
+  h1 { font-size: 20px; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: 0.04em; color: #555; margin-top: 32px; }
+  section { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin-top: 8px; }
+  label { display: block; font-size: 13px; margin-top: 10px; color: #333; }
+  input, select { font-size: 14px; padding: 4px 6px; }
+  .tile-row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+  .tile-row input[type="number"] { width: 50px; }
+  .tile-row input[type="text"] { width: 40px; text-transform: uppercase; }
+  button { cursor: pointer; padding: 6px 12px; font-size: 13px; border-radius: 6px; border: 1px solid #999; background: #f5f5f5; }
+  button.primary { background: #1a5c2a; color: #fff; border-color: #1a5c2a; }
+  button.danger { background: #7a1a1a; color: #fff; border-color: #7a1a1a; }
+  .pending-card { border: 1px solid #e0b84d; background: #fff8e6; border-radius: 6px; padding: 10px; margin-top: 10px; }
+  .status { font-size: 13px; color: #555; margin-top: 6px; white-space: pre-wrap; }
+  .scoreboard { display: flex; gap: 20px; font-size: 15px; }
+  .scoreboard b { font-size: 20px; }
+  #modeSelect { font-size: 14px; }
+</style>
+
+<h1>AutoScorer &mdash; Operator Console</h1>
+
+<section>
+  <h2 style="margin-top:0">Live State</h2>
+  <div class="scoreboard" id="scoreboard">loading&hellip;</div>
+  <div class="status" id="lastMoveStatus"></div>
+  <div class="status">Bag remaining: <b id="bagCount">&mdash;</b></div>
+  <label>Publish mode
+    <select id="modeSelect">
+      <option value="MANUAL">Manual (approve every move)</option>
+      <option value="AUTONOMOUS">Autonomous (publish immediately)</option>
+      <option value="AUTONOMOUS_WITH_CONFIDENCE_FALLBACK">Autonomous, low-confidence falls back to review</option>
+    </select>
+  </label>
+</section>
+
+<h2>Submit a Move</h2>
+<section>
+  <label>Player ID <input id="playerId" type="text" value="p1"></label>
+
+  <div id="tileRows"></div>
+  <button id="addTileRow" type="button">+ Add tile</button>
+
+  <div>
+    <button id="submitPlay" class="primary" type="button">Submit as tile placement</button>
+    <button id="submitExchange" type="button">Submit as exchange / pass (no new tiles)</button>
+  </div>
+  <div class="status" id="submitStatus"></div>
+</section>
+
+<h2>Pending Review</h2>
+<section id="pendingSection">
+  <div class="status">No moves awaiting review.</div>
+</section>
+
+<script>
+  const tileRows = document.getElementById("tileRows");
+
+  function addTileRow(row = "", col = "", letter = "", isBlank = false) {
+    const div = document.createElement("div");
+    div.className = "tile-row";
+    div.innerHTML = `
+      row <input type="number" class="row" value="${row}" min="0" max="14">
+      col <input type="number" class="col" value="${col}" min="0" max="14">
+      letter <input type="text" class="letter" maxlength="1" value="${letter}">
+      blank <input type="checkbox" class="blank" ${isBlank ? "checked" : ""}>
+      <button type="button" class="removeRow">&times;</button>
+    `;
+    div.querySelector(".removeRow").onclick = () => div.remove();
+    tileRows.appendChild(div);
+  }
+  document.getElementById("addTileRow").onclick = () => addTileRow();
+  addTileRow(7, 7, "A"); // seed one row so the form isn't empty on load
+
+  function collectTiles() {
+    return [...tileRows.querySelectorAll(".tile-row")].map((row) => ({
+      row: parseInt(row.querySelector(".row").value, 10),
+      col: parseInt(row.querySelector(".col").value, 10),
+      letter: row.querySelector(".letter").value.toUpperCase(),
+      is_blank: row.querySelector(".blank").checked,
+    })).filter((t) => t.letter);
+  }
+
+  async function submitMove(includeTiles) {
+    const statusEl = document.getElementById("submitStatus");
+    const body = {
+      player_id: document.getElementById("playerId").value,
+      new_tiles: includeTiles ? collectTiles() : [],
+    };
+    const res = await fetch("/moves", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      statusEl.textContent = `Error: ${data.detail}`;
+      return;
+    }
+    statusEl.textContent = data.published
+      ? `Published turn ${data.move.turn_number} (${data.move.move_type}).`
+      : `Queued turn ${data.move.turn_number} for review (${data.move.move_type}).`;
+    refreshPending();
+    refreshState();
+  }
+
+  document.getElementById("submitPlay").onclick = () => submitMove(true);
+  document.getElementById("submitExchange").onclick = () => submitMove(false);
+
+  document.getElementById("modeSelect").onchange = async (e) => {
+    await fetch("/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: e.target.value }),
+    });
+  };
+
+  async function decide(turnNumber, action) {
+    await fetch(`/pending/${turnNumber}/decision`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    refreshPending();
+    refreshState();
+  }
+
+  async function refreshPending() {
+    const res = await fetch("/pending");
+    const items = await res.json();
+    const section = document.getElementById("pendingSection");
+    if (items.length === 0) {
+      section.innerHTML = '<div class="status">No moves awaiting review.</div>';
+      return;
+    }
+    section.innerHTML = "";
+    for (const item of items) {
+      const m = item.move;
+      const card = document.createElement("div");
+      card.className = "pending-card";
+      const words = m.score ? m.score.words.map((w) => `${w.text} (${w.score})`).join(", ") : "";
+      const total = m.score ? m.score.total : 0;
+      card.innerHTML = `
+        <div><b>Turn ${m.turn_number}</b> &mdash; ${m.player_id} &mdash; ${m.move_type}</div>
+        <div>${words}${m.score ? ` &mdash; total <b>${total}</b>${m.score.is_bingo ? " (BINGO +50)" : ""}` : ""}</div>
+        <div style="margin-top:6px">
+          <button class="primary approveBtn">Approve</button>
+          <button class="danger rejectBtn">Reject</button>
+        </div>
+      `;
+      card.querySelector(".approveBtn").onclick = () => decide(m.turn_number, "approve");
+      card.querySelector(".rejectBtn").onclick = () => decide(m.turn_number, "reject");
+      section.appendChild(card);
+    }
+  }
+
+  async function refreshState() {
+    const res = await fetch("/state");
+    const state = await res.json();
+    const scoreboard = document.getElementById("scoreboard");
+    const players = Object.keys(state.scores || {});
+    scoreboard.innerHTML = players.length
+      ? players.map((p) => `${p}: <b>${state.scores[p]}</b>`).join(" &nbsp;|&nbsp; ")
+      : "no players yet";
+    document.getElementById("bagCount").textContent = state.bag_count;
+    document.getElementById("lastMoveStatus").textContent = state.last_move_type
+      ? `Last: ${state.last_player} played ${state.last_move_type}${state.last_word ? ` "${state.last_word}" for ${state.last_points} pts` : ""} (turn ${state.turn_number})`
+      : "No moves played yet.";
+  }
+
+  refreshState();
+  refreshPending();
+  setInterval(refreshPending, 2000);
+  setInterval(refreshState, 2000);
+</script>

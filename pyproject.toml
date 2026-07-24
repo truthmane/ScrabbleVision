@@ -1,0 +1,23 @@
+[project]
+name = "autoscorer"
+version = "0.1.0"
+description = "Automated Scrabble livestream annotation: scoring, tile pool tracking, and stream overlay from live camera feeds."
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "httpx>=0.27"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["autoscorer*"]

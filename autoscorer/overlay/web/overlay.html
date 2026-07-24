@@ -1,0 +1,80 @@
+<title>AutoScorer Overlay</title>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; font-family: -apple-system, "Segoe UI", sans-serif; }
+  .board {
+    display: inline-flex; gap: 24px; align-items: center;
+    background: rgba(10, 20, 15, 0.85); color: #fff;
+    padding: 14px 22px; border-radius: 10px; font-size: 20px;
+  }
+  .scores { display: flex; gap: 18px; }
+  .player { display: flex; flex-direction: column; align-items: center; min-width: 70px; }
+  .player .name { font-size: 13px; opacity: 0.75; text-transform: uppercase; letter-spacing: 0.05em; }
+  .player .score { font-size: 30px; font-weight: 700; }
+  .divider { width: 1px; align-self: stretch; background: rgba(255,255,255,0.25); }
+  .last-move { display: flex; flex-direction: column; }
+  .last-move .word { font-size: 22px; font-weight: 700; letter-spacing: 0.03em; }
+  .last-move .meta { font-size: 13px; opacity: 0.75; }
+  .bag { display: flex; flex-direction: column; align-items: center; min-width: 60px; }
+  .bag .count { font-size: 24px; font-weight: 700; }
+  .bag .label { font-size: 11px; opacity: 0.75; text-transform: uppercase; }
+  .offline { opacity: 0.4; }
+</style>
+<div class="board" id="board">
+  <div class="scores" id="scores"></div>
+  <div class="divider"></div>
+  <div class="last-move" id="lastMove">
+    <div class="word">&mdash;</div>
+    <div class="meta">waiting for first move</div>
+  </div>
+  <div class="divider"></div>
+  <div class="bag">
+    <div class="count" id="bagCount">100</div>
+    <div class="label">in bag</div>
+  </div>
+</div>
+<script>
+  function render(state) {
+    const scoresEl = document.getElementById("scores");
+    scoresEl.innerHTML = "";
+    const players = Object.keys(state.scores || {});
+    if (players.length === 0) {
+      scoresEl.innerHTML = '<div class="player"><div class="name">no players yet</div></div>';
+    }
+    for (const p of players) {
+      const div = document.createElement("div");
+      div.className = "player";
+      div.innerHTML = `<div class="name">${p}</div><div class="score">${state.scores[p]}</div>`;
+      scoresEl.appendChild(div);
+    }
+
+    const lastMoveEl = document.getElementById("lastMove");
+    if (state.last_move_type === "PLAY" && state.last_word) {
+      lastMoveEl.innerHTML = `<div class="word">${state.last_word}</div><div class="meta">${state.last_player} &middot; +${state.last_points} pts &middot; turn ${state.turn_number}</div>`;
+    } else if (state.last_move_type) {
+      lastMoveEl.innerHTML = `<div class="word">${state.last_move_type}</div><div class="meta">${state.last_player} &middot; turn ${state.turn_number}</div>`;
+    } else {
+      lastMoveEl.innerHTML = `<div class="word">&mdash;</div><div class="meta">waiting for first move</div>`;
+    }
+
+    document.getElementById("bagCount").textContent = state.bag_count;
+  }
+
+  function connect() {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const ws = new WebSocket(`${proto}://${location.host}/ws/overlay`);
+    const board = document.getElementById("board");
+
+    ws.onopen = () => board.classList.remove("offline");
+    ws.onmessage = (event) => render(JSON.parse(event.data));
+    ws.onclose = () => {
+      board.classList.add("offline");
+      // Broadcast sources occasionally reload mid-game; always reconnect
+      // and rely on the server sending full state on every new connection
+      // rather than trying to resume from a delta.
+      setTimeout(connect, 1500);
+    };
+    ws.onerror = () => ws.close();
+  }
+
+  connect();
+</script>
