@@ -16,7 +16,19 @@ from autoscorer.gamelogic.board import BOARD_SIZE, Coord
 from autoscorer.perception.calibration.homography import crop_cell
 
 DEFAULT_DIFF_THRESHOLD = 25.0
-DEFAULT_GRADIENT_THRESHOLD = 15.0
+# Calibrated against clean synthetic renders (near-zero background texture),
+# this used to be 15.0 -- which fired on every single cell of a real photo,
+# 0% precision, confirmed by an end-to-end test against real broadcast
+# footage: genuinely empty real cells scored 47-68 gradient just from board
+# printing/JPEG noise, already above that threshold, while occupied cells
+# scored 116-128. The `diff` signal turned out to be the reliable one on
+# real data (empty ~0.03-0.09 vs. occupied 56-86, a huge margin) -- `diff`
+# alone would have worked; this raised threshold just stops `gradient` from
+# uselessly firing on everything rather than removing it as a signal.
+# Per-venue calibration (see the architecture plan) should still re-tune
+# this against that venue's own empty-board reference rather than trusting
+# this default blindly.
+DEFAULT_GRADIENT_THRESHOLD = 100.0
 
 
 def _to_gray_float(image: np.ndarray) -> np.ndarray:
