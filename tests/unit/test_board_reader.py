@@ -224,6 +224,24 @@ def test_read_rack_crops_detected_boxes_and_classifies_them(tmp_path):
     assert [obs.box for obs in observations] == boxes
 
 
+def test_read_rack_returns_tiles_left_to_right_not_in_detector_order(tmp_path):
+    # RF-DETR returns detections in its own (confidence) order, not spatial
+    # order -- observed on a real checkpoint, where a real "SPRAEVG" rack
+    # came back as A,S,R,E,P,V,G. A rack only reads as a rack left-to-right,
+    # so read_rack sorts; this pins that guarantee by handing the fake
+    # detector deliberately shuffled boxes.
+    pytest.importorskip("supervision", reason="supervision (an rfdetr[train] dependency) not installed")
+    classifier = _train_tiny_classifier(tmp_path)
+    rng = random.Random(5)
+    rack_image, boxes = _rack_image_with_tiles(["A", "N", "T"], rng)
+
+    shuffled = [boxes[2], boxes[0], boxes[1]]
+    observations = read_rack(rack_image, _FakeRackDetector(shuffled), classifier)
+
+    assert [obs.box for obs in observations] == boxes
+    assert [obs.letter for obs in observations] == ["A", "N", "T"]
+
+
 def test_read_rack_flags_blank_tile_with_no_letter(tmp_path):
     pytest.importorskip("supervision", reason="supervision (an rfdetr[train] dependency) not installed")
     classifier = _train_tiny_classifier(tmp_path)

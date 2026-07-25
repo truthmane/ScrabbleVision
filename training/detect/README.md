@@ -174,33 +174,53 @@ training runs, for an honest apples-to-apples comparison:**
   venue just added): **all 7 tiles localized cleanly**, 6/7 labels
   correct (S, P, R, A, E, G all correct; only V was misclassified, as N).
 
-**12/14 real tile labels correct across both photos (was roughly half
+12/14 real tile labels correct across both photos (was roughly half
 before), and zero localization failures on either photo (was 2 real
-localization failures -- one miss, one duplicate -- last time).** This is
+localization failures -- one miss, one duplicate -- last time). This is
 the same venue-diversity result WS3 already proved for the tile
-classifier, now confirmed for rack detection too: the *localization* task
-(finding where each tile is) generalized essentially perfectly even from
-the first checkpoint's synthetic-heavy training; it was specifically
-*classification* generalization (reading which letter) that needed real
-cross-venue diversity, and adding one genuinely different venue fixed
-most of it in one pass.
+classifier, now confirmed for rack detection too.
 
-Both remaining errors (M->N, V->N) share a pattern worth noting for
-future work: both are single-letter misclassifications, not localization
-failures, and the confidence-fallback gateway (`AUTONOMOUS_WITH_CONFIDENCE_FALLBACK`)
-would still catch them if wired in with a reasonable threshold, since
-both fell below 0.6 confidence. Not yet tested: whether a 4th venue
-would close this remaining gap the way the 2nd/3rd venue did for the
-classifier, or whether rack detection saturates with less diversity than
-board classification needed.
+### Correction: those numbers measure the wrong code path
 
-This checkpoint (`checkpoint_best_total.pth`, ~115MB) is **not committed
-to the repo** -- it exceeds GitHub's 100MB per-file limit without Git LFS,
-which this repo doesn't have configured (a real setup decision, not made
-unilaterally here). It lives only in the training scratchpad and on the
-RunPod pod it trained on; retrain from the documented recipe above to
-reproduce it, or set up Git LFS first if committing model weights this
-size becomes a recurring need.
+**The 12/14 above is RF-DETR's own classification head, measured through
+`visualize_rack_detections.py`. That is NOT the production path.**
+`board_reader.read_rack` uses the detector for *localization only* and
+hands each detected crop to `TileClassifierModel` -- the two-stage split
+this README advocated all along. Re-measuring the actual production path
+on the same two photos:
+
+| Photo | Truth | `read_rack` output | Correct |
+|---|---|---|---|
+| WESPA (Adam, held-out) | `SPRAEVG` | `SPRAEVG` | **7/7** |
+| NASPA (Orry, held-out) | `XETSREM` | `XETSREM` | **7/7** |
+
+**14/14.** The two-stage architecture beats the detector's own head
+outright -- both errors in the 12/14 measurement (M->N, V->N) disappear
+when the tile classifier reads the crop instead.
+
+Provenance, because it decides how much this number is worth:
+
+- **WESPA `SPRAEVG` is a genuinely clean held-out result for *both*
+  stages.** `models/tile_classifier_v1.pt` was last trained at commit
+  `4544db3`, before the WESPA venue existed in this project at all -- so
+  the classifier had never seen this venue, this tile style, or this
+  photo. This is the number to quote: **7/7 on a fully unseen venue.**
+- **NASPA `XETSREM` is clean for the detector but optimistic for the
+  classifier.** Rack crops from that same game *were* in the classifier's
+  fine-tuning set, so its 7/7 should not be read as generalization.
+
+Lowest-confidence reads were G (0.62) and the NASPA S/M (0.64), so a
+0.9-threshold confidence gate would still route those to an operator --
+the safety net behaves as designed even at 100% raw accuracy.
+
+Not yet tested: whether this holds on racks with gaps, partial draws, or
+blanks (every held-out photo so far is a full 7-tile rack with no blank),
+which is where the remaining risk almost certainly lives.
+
+This checkpoint is committed as `models/rack_detector_v1.pth` (~115MB) via
+**Git LFS** -- it exceeds GitHub's 100MB plain-file limit, so `git lfs
+install` is required before a fresh clone will fetch real weights rather
+than a pointer file. See `models/README.md` for loading instructions.
 
 ## What's real vs. synthetic right now
 
@@ -216,15 +236,16 @@ size becomes a recurring need.
 
 ## Next steps once a trained model exists
 
-- Wire the detector's output boxes into `autoscorer/perception/board_reader.py`
-  as a rack-reading counterpart to `read_new_cells`/`read_new_cells_voted` --
-  crop each detected box, run it through the existing `TileClassifierModel`
-  (no retraining needed there; the detector only needs to *localize* tiles,
-  the classifier already knows how to *read* them). **This is now a
-  reasonable next step** -- localization is essentially solved and
-  classification is honestly measured at 12/14 (85.7%) on real held-out
-  photos, well above chance and consistent with the confidence-gated
-  operator-review safety net the rest of this project already relies on.
+- ~~Wire the detector's output boxes into `autoscorer/perception/board_reader.py`~~
+  **DONE** -- `read_rack` / `rack_observations_to_tiles`. Crops each detected
+  box and runs it through the existing `TileClassifierModel` (no retraining
+  needed there; the detector only *localizes*, the classifier *reads*).
+  Verified end-to-end against the real committed checkpoints: 7/7 on a
+  fully-unseen venue (see the correction section above).
+  Known rough edge: `read_rack` returns detections in the detector's own
+  order, not left-to-right. Callers that care about rack order (operator
+  display, anything reconstructing the rack as a string) must sort by
+  `box[0]` themselves. Worth fixing in `read_rack` itself.
 - Feed real rack contents into `autoscorer/gamelogic/movedetect/constraint_decoder.py`'s
   `decode_feasible_reading` (currently called with `racks=[]` everywhere
   since no rack camera/detector existed yet) -- this tightens the

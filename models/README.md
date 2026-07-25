@@ -56,11 +56,16 @@ The rack-tile object detector described in `training/detect/README.md`. Stored v
   plus 136 real tile boxes from **3 distinct venues/productions** (2026 NASPA broadcast, "Let's
   Play Scrabble"/CSW production, WESPA Word Wars), folded into `train` only.
 - **Honest accuracy**: tested on two real held-out rack photos never used in training —
-  **all 14 tiles localized correctly (zero misses, zero duplicate boxes)**, **12/14 (85.7%)
-  correctly classified** when each detected box is cropped and re-read by `tile_classifier_v1.pt`.
-  Both remaining errors were single-letter confusions (M→N, V→N), each below 0.6 confidence.
-  See `training/detect/README.md` for the full before/after comparison against the first
-  (pre-3rd-venue) checkpoint.
+  **all 14 tiles localized correctly (zero misses, zero duplicate boxes)**, and **14/14
+  correctly read** through the production path (`board_reader.read_rack`, which crops each
+  detected box and re-reads it with `tile_classifier_v1.pt`). The number worth quoting is
+  **7/7 on the WESPA rack**, a venue the classifier had never seen at all — it was last
+  trained at `4544db3`, before that venue existed in this project. The other 7/7 (NASPA) is
+  clean for the detector but optimistic for the classifier, which saw rack crops from that
+  same game in fine-tuning. Note: RF-DETR's *own* classification head only gets 12/14 on
+  these photos — the two-stage split (detector localizes, classifier reads) is measurably
+  better than letting the detector label. See `training/detect/README.md` for the full
+  comparison.
 - **Not yet wired into a full end-to-end run**: `read_rack` exists in the perception layer, but
   the constraint decoder hasn't yet been re-validated with real (non-empty) racks in place of the
   `racks=[]` placeholder it always used before this checkpoint existed.

@@ -170,9 +170,18 @@ def read_rack(
     detected box is cropped and handed to the same `TileClassifierModel`
     used for board cells. The detector only needs to find *where* the
     tiles are; classification stays the classifier's job, since it's the
-    more mature, better-calibrated component (see training/detect/README.md
-    for the honest held-out accuracy this currently gets: 12/14 real tiles
-    across two held-out photos as of the 3rd-venue retrain).
+    more mature, better-calibrated component -- and measurably the better
+    reader: on the two held-out photos, RF-DETR's own classification head
+    gets 12/14 while routing the same boxes through the classifier gets
+    14/14 (see training/detect/README.md for the full comparison and the
+    provenance caveats on each photo).
+
+    Results are returned **left-to-right by box position**, not in the
+    detector's own (confidence-ordered) output order -- a rack only reads
+    as a rack in spatial order, and every caller that reconstructs rack
+    contents for display or operator review would otherwise have to
+    re-sort. Pool accounting doesn't care about order, but nothing else
+    should have to know that.
 
     `rack_frame` and each crop follow the same BGR (OpenCV) convention as
     `read_board`/`read_new_cells` -- both the detector and the classifier
@@ -191,7 +200,7 @@ def read_rack(
         observations.append(
             RackTileObservation(letter=letter, is_blank=is_blank, confidence=confidence, box=(x1, y1, x2, y2))
         )
-    return observations
+    return sorted(observations, key=lambda obs: obs.box[0])
 
 
 def rack_observations_to_tiles(observations: Sequence[RackTileObservation]) -> List[Tile]:
