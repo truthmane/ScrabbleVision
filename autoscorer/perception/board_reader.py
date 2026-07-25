@@ -17,7 +17,7 @@ threshold decision, it's a structural one.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 import cv2
 import numpy as np
@@ -25,6 +25,7 @@ import numpy as np
 from autoscorer.api.session import NewTile
 from autoscorer.gamelogic.board import BOARD_SIZE, BoardState, Coord
 from autoscorer.gamelogic.movedetect.constraint_decoder import CellCandidates
+from autoscorer.gamelogic.movedetect.temporal_vote import temporal_vote
 from autoscorer.perception.calibration.homography import BoardCalibration, crop_cell
 from autoscorer.perception.occupancy.detector import detect_occupancy
 from training.classify.infer import TileClassifierModel
@@ -100,6 +101,51 @@ def read_new_cells(
             crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
             candidates = classifier.predict_topk(crop_rgb, k=top_k)
             results.append(CellCandidates(coord=coord, candidates=candidates))
+    return results
+
+
+def read_new_cells_voted(
+    raw_frames: Sequence[np.ndarray],
+    calibration: BoardCalibration,
+    reference_board: np.ndarray,
+    classifier: TileClassifierModel,
+    board_before: BoardState,
+    top_k: int = 3,
+) -> List[CellCandidates]:
+    """Like `read_new_cells`, but combines classifier readings across
+    several frames of the *same* stable board moment via
+    `temporal_vote` before returning candidates -- the M2 lever from
+    docs/classifier-accuracy-plan.md ("per-tile after temporal voting
+    over >=5 stable frames"). A tile misread in one frame (glare, motion
+    blur, a bad angle) gets outvoted by the frames that read it correctly,
+    which raw single-frame confidence has no way to recover from.
+
+    Assumes `raw_frames` all show the same board state -- that's what a
+    stillness gate upstream (not built here; see the master architecture
+    plan's move-detection state machine) is responsible for guaranteeing.
+    Occupancy is decided from the first frame only; a genuinely stable
+    sequence shouldn't disagree on which cells are occupied.
+    """
+    if not raw_frames:
+        raise ValueError("read_new_cells_voted needs at least one frame")
+
+    num_classes = len(classifier.classes)
+    rectified_frames = [calibration.rectify(frame) for frame in raw_frames]
+    occupancy = detect_occupancy(rectified_frames[0], reference_board)
+
+    results = []
+    for row in range(BOARD_SIZE):
+        for col in range(BOARD_SIZE):
+            coord = (row, col)
+            if not occupancy[coord] or not board_before.is_empty(coord):
+                continue
+            per_frame_candidates = []
+            for rectified in rectified_frames:
+                crop = crop_cell(rectified, row, col)
+                crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+                per_frame_candidates.append(classifier.predict_topk(crop_rgb, k=num_classes))
+            voted = temporal_vote(per_frame_candidates)[:top_k]
+            results.append(CellCandidates(coord=coord, candidates=voted))
     return results
 
 

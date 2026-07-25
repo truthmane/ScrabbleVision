@@ -1,10 +1,17 @@
 import random
 
 import numpy as np
+import pytest
 import torch
 
 from autoscorer.gamelogic.board import BOARD_SIZE, PREMIUM_SQUARES, BoardState, Tile
-from autoscorer.perception.board_reader import partition_observations, read_board, read_new_cells, CellObservation
+from autoscorer.perception.board_reader import (
+    partition_observations,
+    read_board,
+    read_new_cells,
+    read_new_cells_voted,
+    CellObservation,
+)
 from autoscorer.perception.calibration.homography import CANONICAL_SIZE, BoardCalibration, cell_bounds
 from training.classify.infer import TileClassifierModel
 from training.classify.train import run_training, save_checkpoint
@@ -114,6 +121,45 @@ def test_read_new_cells_excludes_cells_already_in_board_before(tmp_path):
     for cc in candidates:
         assert len(cc.candidates) == 2
         assert all(isinstance(label, str) and isinstance(conf, float) for label, conf in cc.candidates)
+
+
+def test_read_new_cells_voted_outvotes_a_single_bad_frame(tmp_path):
+    # Four frames genuinely show an "A" tile at (4, 0); a fifth frame
+    # shows a "T" tile there instead -- standing in for a single bad look
+    # (glare, motion blur, a bad angle) at the *same* physical cell.
+    # Voting across all five should still land on "A", the true majority,
+    # exactly the M2 lever docs/classifier-accuracy-plan.md calls for.
+    classifier = _train_tiny_classifier(tmp_path)
+    reference = _blank_board_image()
+    board_before = BoardState()
+    rng = random.Random(11)
+
+    good_frames = []
+    for _ in range(4):
+        frame = reference.copy()
+        _place_tile(frame, 4, 0, "A", rng)
+        good_frames.append(frame)
+
+    bad_frame = reference.copy()
+    _place_tile(bad_frame, 4, 0, "T", rng)
+
+    frames = good_frames + [bad_frame]
+
+    candidates = read_new_cells_voted(
+        frames, IDENTITY_CALIBRATION, reference, classifier, board_before, top_k=2,
+    )
+
+    assert len(candidates) == 1
+    cc = candidates[0]
+    assert cc.coord == (4, 0)
+    assert cc.candidates[0][0] == "A"
+
+
+def test_read_new_cells_voted_requires_at_least_one_frame(tmp_path):
+    classifier = _train_tiny_classifier(tmp_path)
+    reference = _blank_board_image()
+    with pytest.raises(ValueError):
+        read_new_cells_voted([], IDENTITY_CALIBRATION, reference, classifier, BoardState())
 
 
 def test_partition_submits_directly_when_all_confident_and_no_blanks():
