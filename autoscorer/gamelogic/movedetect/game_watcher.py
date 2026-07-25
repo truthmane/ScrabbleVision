@@ -36,11 +36,24 @@ being a system rather than a collection of validated parts.
   frames arrive. The master plan's "only combine observations once all
   relevant cameras are simultaneously settled" is not implemented.
 - Validated so far only against synthetic frame sequences (see
-  `tests/unit/test_game_watcher.py`) -- not yet run against a real
-  continuous video. Every real-photo validation this project has done
-  (WS3, WS5, the rack-detector held-out tests) was single-frame; proving
-  this against real continuous footage is the natural next step, not
-  something this module can claim on its own.
+  `tests/unit/test_game_watcher.py`) and against real broadcast footage
+  run through short clips (see `perception/capture/run_watcher.py` and
+  `docs/`/README status notes) -- not yet a complete real game
+  end-to-end.
+- **Standalone by default, but can delegate to a live `GameSession`.**
+  Pass `session=` and this stops tracking its own board/racks/turn
+  numbers/gateway decision -- every detected move goes through
+  `GameSession.submit_move` instead, exactly the same call path a human
+  operator's typed-in move already takes (`POST /moves`). That's the
+  point: a CV-detected move and an operator-typed move become
+  indistinguishable once they reach the session, so they show up in the
+  same `/pending` list, the same overlay, and the same operator-approval
+  flow, rather than perception output going nowhere a human can act on
+  it. `GameSession` lives under `autoscorer/api/` in this repo's current
+  layout but is itself ASGI-free (see its own docstring) -- importing it
+  here is a real, deliberate layering call, not an accident: it's the
+  connective tissue this project was missing between "a validated
+  pipeline" and "a product."
 """
 from __future__ import annotations
 
@@ -51,11 +64,12 @@ from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 
-from autoscorer.gamelogic.board import BoardState, Tile
+from autoscorer.api.session import GameSession
+from autoscorer.gamelogic.board import BoardState, Coord, Tile
 from autoscorer.gamelogic.movedetect.constraint_decoder import CLASSIFIER_BLANK_LABEL, decode_feasible_reading
 from autoscorer.gamelogic.movedetect.validator import validate_placement
 from autoscorer.gamelogic.movedetect.word_resolver import words_formed
-from autoscorer.gamelogic.models import MoveCandidate, MoveType, ScoredMove
+from autoscorer.gamelogic.models import MoveCandidate, MoveProcessingError, MoveType, ScoredMove
 from autoscorer.gamelogic.pool.bag_engine import PoolInvariantViolation, compute_pool_state
 from autoscorer.gamelogic.publish import PendingMove, PublishGateway
 from autoscorer.gamelogic.scoring.rules_engine import score_move
@@ -96,10 +110,24 @@ def _rack_multiset(tiles: Sequence[Tile]) -> Counter:
 
 
 class GameWatcher:
-    """Owns the running game state (`board`, per-player `racks`,
-    `turn_number`) and the rolling board-camera frame buffer; each call to
+    """Owns the rolling board-camera frame buffer; each call to
     `observe_board_frame`/`record_rack` advances `state` and returns a
     `WatcherEvent` describing what happened, if anything.
+
+    Two modes, chosen by whether `session` is given:
+
+    - **Standalone** (`session=None`, the default): tracks its own
+      `board`/`racks`/`turn_number` and makes its own auto-publish
+      decision via the required `publish_gateway`. Simplest to construct
+      and test in isolation (see `tests/unit/test_game_watcher.py`).
+    - **Delegated** (`session=<GameSession>`): `board`/`racks`/
+      `turn_number` become read-only views onto `session.game_state`, and
+      every detected move is submitted through `session.submit_move` --
+      the exact path a human operator's typed-in move already takes.
+      `publish_gateway` is unused in this mode (the session has its own).
+      This is what makes a detected move show up in the real product's
+      `/pending` list, overlay, and operator-approval flow instead of
+      going nowhere.
 
     `rack_detector` is optional -- omit it if only board-camera processing
     is needed; `record_rack` raises if called without one.
@@ -110,28 +138,50 @@ class GameWatcher:
         calibration: BoardCalibration,
         reference_board: np.ndarray,
         classifier: TileClassifierModel,
-        publish_gateway: PublishGateway,
+        publish_gateway: Optional[PublishGateway] = None,
+        session: Optional[GameSession] = None,
         rack_detector=None,
         motion_threshold: float = DEFAULT_MOTION_THRESHOLD,
         still_frame_count: int = DEFAULT_STILL_FRAME_COUNT,
         occupancy_diff_threshold: float = DEFAULT_DIFF_THRESHOLD,
         occupancy_gradient_threshold: float = DEFAULT_GRADIENT_THRESHOLD,
     ) -> None:
+        if session is None and publish_gateway is None:
+            raise ValueError(
+                "GameWatcher needs either publish_gateway (standalone mode) or "
+                "session (delegated mode) -- see the class docstring"
+            )
+
         self.calibration = calibration
         self.reference_board = reference_board
         self.classifier = classifier
         self.publish_gateway = publish_gateway
+        self.session = session
         self.rack_detector = rack_detector
         self.motion_threshold = motion_threshold
         self.still_frame_count = still_frame_count
         self.occupancy_diff_threshold = occupancy_diff_threshold
         self.occupancy_gradient_threshold = occupancy_gradient_threshold
 
-        self.board = BoardState()
-        self.racks: Dict[str, List[Tile]] = {}
-        self.turn_number = 0
+        self._board = BoardState()
+        self._racks: Dict[str, List[Tile]] = {}
+        self._turn_number = 0
         self.state = WatcherState.IDLE_STILL
         self._frame_buffer: List[np.ndarray] = []
+
+    @property
+    def board(self) -> BoardState:
+        return self.session.game_state.board if self.session is not None else self._board
+
+    @property
+    def racks(self) -> Dict[str, List[Tile]]:
+        return self.session.game_state.racks if self.session is not None else self._racks
+
+    @property
+    def turn_number(self) -> int:
+        if self.session is not None:
+            return len(self.session.game_state.history)
+        return self._turn_number
 
     def observe_board_frame(self, frame: np.ndarray, player_id: str) -> WatcherEvent:
         """Feed one sampled board-camera frame in. `player_id` is whose
@@ -195,23 +245,26 @@ class GameWatcher:
 
         self.state = WatcherState.CANDIDATE_VALIDATED
 
+        try:
+            compute_pool_state(board_after, list(self.racks.values()))
+        except PoolInvariantViolation as exc:
+            return WatcherEvent(
+                state=self.state, confidence=min_confidence,
+                needs_operator=True, reason=f"pool invariant violated: {exc}",
+            )
+
+        if self.session is not None:
+            return self._submit_play_via_session(decoded, player_id, min_confidence)
+
         words = words_formed(board_after, new_cells)
         move_score = score_move(board_after, words, new_cells)
-        provisional_turn = self.turn_number + 1
+        provisional_turn = self._turn_number + 1
         candidate = MoveCandidate(
             turn_number=provisional_turn, player_id=player_id, move_type=MoveType.PLAY,
             new_cells=tuple(new_cells),
         )
         scored_move = ScoredMove(candidate=candidate, move_score=move_score)
         self.state = WatcherState.SCORED
-
-        try:
-            compute_pool_state(board_after, list(self.racks.values()))
-        except PoolInvariantViolation as exc:
-            return WatcherEvent(
-                state=self.state, scored_move=scored_move, confidence=min_confidence,
-                needs_operator=True, reason=f"pool invariant violated: {exc}",
-            )
 
         if not self.publish_gateway.should_auto_publish(min_confidence):
             pending = PendingMove(
@@ -222,10 +275,40 @@ class GameWatcher:
                 needs_operator=True, pending=pending, reason="confidence below gateway threshold",
             )
 
-        self.board = board_after
-        self.turn_number = provisional_turn
+        self._board = board_after
+        self._turn_number = provisional_turn
         self.state = WatcherState.APPLIED
         return WatcherEvent(state=self.state, scored_move=scored_move, confidence=min_confidence)
+
+    def _submit_play_via_session(
+        self, decoded: Dict[Coord, str], player_id: str, min_confidence: float,
+    ) -> WatcherEvent:
+        """The delegated-mode path: hands the decoded reading to
+        `GameSession.submit_move` -- the same call a human operator's
+        typed-in move already goes through -- instead of this class
+        re-implementing scoring/gateway/apply bookkeeping a second time.
+        Placement validity and the pool invariant were already checked by
+        the caller before reaching here (against `self.board`, the same
+        board `submit_move` will use), so `MoveProcessingError` shouldn't
+        normally trigger -- handled anyway since `submit_move`'s contract
+        allows it.
+        """
+        new_tiles = [(coord, label, False) for coord, label in decoded.items()]
+        result = self.session.submit_move(player_id, new_tiles=new_tiles, confidence=min_confidence)
+
+        if isinstance(result.outcome, MoveProcessingError):
+            return WatcherEvent(
+                state=self.state, confidence=min_confidence, needs_operator=True, reason=result.outcome.reason,
+            )
+
+        self.state = WatcherState.APPLIED if result.published else WatcherState.SCORED
+        turn_number = result.outcome.candidate.turn_number
+        pending = None if result.published else self.session.pending.get(turn_number)
+        return WatcherEvent(
+            state=self.state, scored_move=result.outcome, confidence=min_confidence,
+            needs_operator=not result.published, pending=pending,
+            reason=None if result.published else "confidence below gateway threshold",
+        )
 
     def record_rack(
         self, player_id: str, rack_frame: np.ndarray, detection_threshold: float = 0.3,
@@ -257,6 +340,17 @@ class GameWatcher:
             return None
 
         min_confidence = min((obs.confidence for obs in observations), default=1.0)
+
+        if is_first_observation:
+            # Establishing a player's starting rack isn't a move -- every
+            # player starts with a full rack, so there's no gateway
+            # decision or turn to record, in either mode.
+            self.racks[player_id] = new_rack
+            return None
+
+        if self.session is not None:
+            return self._submit_exchange_via_session(player_id, new_rack, min_confidence)
+
         if not self.publish_gateway.should_auto_publish(min_confidence):
             return WatcherEvent(
                 state=self.state, confidence=min_confidence, needs_operator=True,
@@ -264,11 +358,28 @@ class GameWatcher:
             )
 
         self.racks[player_id] = new_rack
-        if is_first_observation:
-            return None
-
-        self.turn_number += 1
-        candidate = MoveCandidate(turn_number=self.turn_number, player_id=player_id, move_type=MoveType.EXCHANGE)
+        self._turn_number += 1
+        candidate = MoveCandidate(turn_number=self._turn_number, player_id=player_id, move_type=MoveType.EXCHANGE)
         scored_move = ScoredMove(candidate=candidate, move_score=None)
         self.state = WatcherState.APPLIED
         return WatcherEvent(state=self.state, scored_move=scored_move, confidence=min_confidence)
+
+    def _submit_exchange_via_session(
+        self, player_id: str, new_rack: List[Tile], min_confidence: float,
+    ) -> WatcherEvent:
+        rack_after = [(tile.letter, tile.is_blank) for tile in new_rack]
+        result = self.session.submit_move(player_id, rack_after=rack_after, confidence=min_confidence)
+
+        if isinstance(result.outcome, MoveProcessingError):
+            return WatcherEvent(
+                state=self.state, confidence=min_confidence, needs_operator=True, reason=result.outcome.reason,
+            )
+
+        self.state = WatcherState.APPLIED if result.published else WatcherState.SCORED
+        turn_number = result.outcome.candidate.turn_number
+        pending = None if result.published else self.session.pending.get(turn_number)
+        return WatcherEvent(
+            state=self.state, scored_move=result.outcome, confidence=min_confidence,
+            needs_operator=not result.published, pending=pending,
+            reason=None if result.published else "rack read confidence below gateway threshold",
+        )

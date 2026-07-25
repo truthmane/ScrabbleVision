@@ -29,6 +29,7 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
+from autoscorer.api.session import GameSession
 from autoscorer.gamelogic.movedetect.game_watcher import GameWatcher, WatcherEvent, WatcherState
 from autoscorer.gamelogic.models import MoveType
 from autoscorer.gamelogic.publish import PublishGateway, PublishMode
@@ -68,32 +69,49 @@ def run_watcher_on_video(
     classifier_path: Path,
     player1_id: str,
     player2_id: str,
-    sample_fps: float = 2.0,
+    sample_fps: Optional[float] = 2.0,
     mode: PublishMode = PublishMode.AUTONOMOUS_WITH_CONFIDENCE_FALLBACK,
     confidence_threshold: float = 0.9,
     max_frames: Optional[int] = None,
     device: str = "cpu",
+    session: Optional[GameSession] = None,
+    on_event=None,
 ) -> List[WatcherEvent]:
     """Runs `GameWatcher` against every sampled frame of `video_path`,
     alternating `player1_id`/`player2_id` after each confirmed PLAY.
     Returns every event that carried a detected move (empty settle/no-op
     events are filtered out -- callers wanting the raw per-frame trace
     should drive `GameWatcher` directly instead).
+
+    Pass `session` (an existing `GameSession`, e.g. the FastAPI app's live
+    one) to run in delegated mode -- every detected move then flows
+    through the same `submit_move` path an operator's typed-in move
+    already uses, landing in that session's real `/pending` list and
+    history, not a throwaway one. `mode`/`confidence_threshold` are
+    ignored in that case (the session's own gateway already has them).
+
+    `on_event`, if given, is called with every move-carrying event as it
+    happens -- the hook `main.py`'s `/watch` endpoint uses to broadcast an
+    overlay update the moment a move actually publishes, without this
+    function needing to know anything about WebSockets.
     """
     profile = load_venue_profile(venue_name)
     classifier = TileClassifierModel(classifier_path, device=device)
-    gateway = PublishGateway(mode=mode, confidence_threshold=confidence_threshold)
 
-    watcher = GameWatcher(
+    watcher_kwargs = dict(
         calibration=profile.calibration(),
         reference_board=profile.load_reference_board(),
         classifier=classifier,
-        publish_gateway=gateway,
         motion_threshold=profile.motion_threshold,
         still_frame_count=profile.still_frame_count,
         occupancy_diff_threshold=profile.occupancy_diff_threshold,
         occupancy_gradient_threshold=profile.occupancy_gradient_threshold,
     )
+    if session is not None:
+        watcher = GameWatcher(session=session, **watcher_kwargs)
+    else:
+        gateway = PublishGateway(mode=mode, confidence_threshold=confidence_threshold)
+        watcher = GameWatcher(publish_gateway=gateway, **watcher_kwargs)
 
     current_player, other_player = player1_id, player2_id
     events: List[WatcherEvent] = []
@@ -110,6 +128,8 @@ def run_watcher_on_video(
             line = format_event(event, current_player)
             if line:
                 print(line)
+            if on_event is not None:
+                on_event(event)
 
             if event.state == WatcherState.APPLIED and event.scored_move.candidate.move_type == MoveType.PLAY:
                 current_player, other_player = other_player, current_player

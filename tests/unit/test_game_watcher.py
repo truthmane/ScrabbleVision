@@ -4,7 +4,9 @@ import numpy as np
 import pytest
 import torch
 
+from autoscorer.api.session import GameSession
 from autoscorer.gamelogic.board import BOARD_SIZE, CENTER, PREMIUM_SQUARES
+from autoscorer.gamelogic.models import MoveType
 from autoscorer.gamelogic.movedetect.game_watcher import GameWatcher, WatcherState
 from autoscorer.gamelogic.publish import PublishGateway, PublishMode
 from autoscorer.perception.calibration.homography import CANONICAL_SIZE, BoardCalibration, cell_bounds
@@ -369,3 +371,122 @@ def test_multi_turn_synthetic_game_sequences_correctly(tmp_path):
     assert watcher.board.get((7, 9)).letter == "T"
     assert watcher.board.get((8, 9)).letter == "N"
     assert watcher.turn_number == 4
+
+
+# --- Delegated mode: GameWatcher driving a live GameSession -----------------
+
+def _make_session_watcher(classifier, session, rack_detector=None):
+    return GameWatcher(
+        calibration=IDENTITY_CALIBRATION,
+        reference_board=_blank_board_image(),
+        classifier=classifier,
+        session=session,
+        rack_detector=rack_detector,
+        still_frame_count=3,
+    )
+
+
+def test_requires_either_publish_gateway_or_session(tmp_path):
+    classifier = _train_tiny_classifier(tmp_path)
+    with pytest.raises(ValueError):
+        GameWatcher(
+            calibration=IDENTITY_CALIBRATION, reference_board=_blank_board_image(), classifier=classifier,
+        )
+
+
+def test_delegated_mode_auto_publish_applies_to_the_session_not_a_separate_board(tmp_path):
+    classifier = _train_tiny_classifier(tmp_path)
+    session = GameSession(mode=PublishMode.AUTONOMOUS)
+    watcher = _make_session_watcher(classifier, session)
+    rng = random.Random(7)
+
+    empty = _blank_board_image()
+    for _ in range(3):
+        watcher.observe_board_frame(empty.copy(), player_id="p1")
+
+    placed = _blank_board_image()
+    _place_tile(placed, *CENTER, "A", rng)
+    events = [watcher.observe_board_frame(placed.copy(), player_id="p1") for _ in range(3)]
+
+    final = events[-1]
+    assert final.needs_operator is False
+    assert final.scored_move.candidate.new_cells == (CENTER,)
+
+    # The move landed in the SESSION's game state -- not some parallel
+    # board only the watcher knows about. watcher.board is a live view
+    # onto the same object, not a copy.
+    assert session.game_state.board.get(CENTER).letter == "A"
+    assert watcher.board is session.game_state.board
+    assert session.game_state.scores["p1"] == final.scored_move.move_score.total
+    assert watcher.turn_number == 1
+
+
+def test_delegated_mode_low_confidence_becomes_a_real_pending_move_in_the_session(tmp_path):
+    classifier = _train_tiny_classifier(tmp_path)
+    # AUTONOMOUS_WITH_CONFIDENCE_FALLBACK at an impossible threshold guarantees
+    # this real prediction needs operator review, regardless of its own score.
+    session = GameSession(mode=PublishMode.AUTONOMOUS_WITH_CONFIDENCE_FALLBACK)
+    session.gateway.confidence_threshold = 1.01
+    watcher = _make_session_watcher(classifier, session)
+    rng = random.Random(7)
+
+    empty = _blank_board_image()
+    for _ in range(3):
+        watcher.observe_board_frame(empty.copy(), player_id="p1")
+
+    placed = _blank_board_image()
+    _place_tile(placed, *CENTER, "A", rng)
+    events = [watcher.observe_board_frame(placed.copy(), player_id="p1") for _ in range(3)]
+
+    final = events[-1]
+    assert final.needs_operator is True
+    assert final.pending is not None
+    assert session.game_state.board.is_blank_board()  # not applied yet
+
+    # It's a REAL pending move in the session -- the same operator-review
+    # queue a manually-typed low-confidence move would land in, approvable
+    # through the same session.decide() a human operator's "approve"
+    # click already calls.
+    pending_list = session.list_pending()
+    assert len(pending_list) == 1
+    assert pending_list[0].scored_move.candidate.new_cells == (CENTER,)
+
+    turn_number = final.scored_move.candidate.turn_number
+    applied = session.decide(turn_number, "approve")
+    assert applied is True
+    assert session.game_state.board.get(CENTER).letter == "A"
+
+
+def test_delegated_mode_record_rack_first_observation_seeds_session_racks_silently(tmp_path):
+    pytest.importorskip("supervision", reason="supervision (an rfdetr[train] dependency) not installed")
+    classifier = _train_tiny_classifier(tmp_path)
+    session = GameSession(mode=PublishMode.AUTONOMOUS)
+    rng = random.Random(3)
+    rack_image, boxes = _rack_image_with_tiles(["A", "N", "T"], rng)
+    watcher = _make_session_watcher(classifier, session, rack_detector=_FakeRackDetector(boxes))
+
+    event = watcher.record_rack("p1", rack_image)
+
+    assert event is None
+    assert [t.letter for t in session.game_state.racks["p1"]] == ["A", "N", "T"]
+    assert session.game_state.history == []  # establishing a starting rack isn't a turn
+
+
+def test_delegated_mode_record_rack_exchange_goes_through_session_submit_move(tmp_path):
+    pytest.importorskip("supervision", reason="supervision (an rfdetr[train] dependency) not installed")
+    classifier = _train_tiny_classifier(tmp_path)
+    session = GameSession(mode=PublishMode.AUTONOMOUS)
+    rng = random.Random(3)
+    first_image, first_boxes = _rack_image_with_tiles(["A", "N", "T"], rng)
+    watcher = _make_session_watcher(classifier, session, rack_detector=_FakeRackDetector(first_boxes))
+    watcher.record_rack("p1", first_image)
+
+    second_image, second_boxes = _rack_image_with_tiles(["N", "A", "N"], rng)
+    watcher.rack_detector = _FakeRackDetector(second_boxes)
+    event = watcher.record_rack("p1", second_image)
+
+    assert event is not None
+    assert event.needs_operator is False
+    assert event.scored_move.candidate.move_type == MoveType.EXCHANGE
+    assert [t.letter for t in session.game_state.racks["p1"]] == ["N", "A", "N"]
+    assert len(session.game_state.history) == 1

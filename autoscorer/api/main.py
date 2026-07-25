@@ -9,6 +9,8 @@ overlay, entirely without a camera.
 """
 from __future__ import annotations
 
+import asyncio
+import threading
 from pathlib import Path
 from typing import List, Optional
 
@@ -86,6 +88,34 @@ class OperatorDecisionRequest(BaseModel):
 
 class ModeChangeRequest(BaseModel):
     mode: PublishMode
+
+
+class WatchRequest(BaseModel):
+    video_path: str
+    venue: str
+    player1: str
+    player2: str
+    sample_fps: Optional[float] = 2.0
+    classifier_path: str = "models/tile_classifier_v1.pt"
+    max_frames: Optional[int] = None
+
+
+class WatchStatus:
+    """Tracks the single background video-watching run this process
+    supports at a time -- one `GameSession` already means one live game,
+    so one concurrent watcher is the right constraint, not an arbitrary
+    limitation. A real multi-table deployment would need one session (and
+    one watcher) per table, not more concurrency on this one.
+    """
+
+    def __init__(self) -> None:
+        self.thread: Optional[threading.Thread] = None
+        self.running = False
+        self.events_seen = 0
+        self.error: Optional[str] = None
+
+
+watch_status = WatchStatus()
 
 
 def _score_move_to_dict(scored: ScoredMove) -> dict:
@@ -185,3 +215,75 @@ async def overlay_field_page():
 @app.get("/operator")
 async def operator_page():
     return FileResponse(_STATIC_DIR / "operator_ui" / "web" / "operator.html")
+
+
+@app.post("/watch")
+async def start_watching(request: WatchRequest):
+    """Starts `run_watcher_on_video` against the app's own live `session`,
+    in a background thread -- the connective tissue that makes a video
+    file (today; a real camera, unchanged, once one exists) drive the
+    exact same overlay/operator UI a human operator's typed-in moves
+    already do. Every detected move goes through `session.submit_move`
+    (see `GameWatcher`'s delegated mode), so it lands in the real
+    `/pending` list and broadcasts to `/ws/overlay` the moment it
+    publishes, same as a manual entry.
+
+    One watch run at a time, matching one `GameSession` per process --
+    returns 409 if a previous run hasn't finished.
+    """
+    if watch_status.running:
+        raise HTTPException(status_code=409, detail="a watch run is already in progress")
+
+    # training.detect imports rfdetr transitively, an optional dependency
+    # this project's rack detection needs but board-only watching (all
+    # run_watcher.py currently supports) does not -- imported lazily here
+    # so a server with only the classifier installed can still serve
+    # every other route.
+    from autoscorer.perception.capture.run_watcher import run_watcher_on_video
+
+    loop = asyncio.get_running_loop()
+
+    def on_event(event) -> None:
+        watch_status.events_seen += 1
+        if event.needs_operator:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                overlay_connections.broadcast(build_overlay_state(session.game_state)), loop,
+            )
+        except RuntimeError:
+            # The event loop this handler was bound to is gone (server
+            # shutting down, or -- the only way this actually triggers in
+            # practice today -- a test harness with a short-lived loop per
+            # request). Either way, a missed overlay push for one move
+            # must never abort the rest of the video; GET /state always
+            # has the real, current answer regardless.
+            pass
+
+    def run() -> None:
+        watch_status.running = True
+        watch_status.events_seen = 0
+        watch_status.error = None
+        try:
+            run_watcher_on_video(
+                Path(request.video_path), request.venue, Path(request.classifier_path),
+                request.player1, request.player2, sample_fps=request.sample_fps,
+                max_frames=request.max_frames, session=session, on_event=on_event,
+            )
+        except Exception as exc:  # noqa: BLE001 -- surfaced via /watch/status, not raised in this thread
+            watch_status.error = str(exc)
+        finally:
+            watch_status.running = False
+
+    watch_status.thread = threading.Thread(target=run, daemon=True)
+    watch_status.thread.start()
+    return {"started": True}
+
+
+@app.get("/watch/status")
+async def watch_status_endpoint():
+    return {
+        "running": watch_status.running,
+        "events_seen": watch_status.events_seen,
+        "error": watch_status.error,
+    }

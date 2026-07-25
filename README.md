@@ -33,11 +33,26 @@ An ML-powered auto-annotator for livestreamed Scrabble games
   `configs/venues/wespa_word_wars.json`'s notes for the one still open).
   The confidence-gated safety net is doing exactly the job it was designed
   for, even with real, unresolved perception quirks in the loop.
+- **Wired into the actual product, not just a script.** `GameWatcher` now
+  has a delegated mode (`session=`): every detected move flows through
+  `GameSession.submit_move`, the exact call path a human operator's
+  typed-in move already uses. The FastAPI app has a new `POST /watch`
+  endpoint (`autoscorer/api/main.py`) that starts a video against the
+  app's own live session in a background thread, broadcasting overlay
+  updates as moves publish. **Verified live**: started the real server,
+  pointed `/watch` at the real WESPA game-start clip, and watched the
+  existing, unmodified operator UI (`/operator`) fill up with 61
+  individually-reviewable pending moves in real time -- all correctly
+  low-confidence, none wrongly auto-published, all approvable/rejectable
+  through the same buttons a human operator already uses for manual
+  entry. This is the connective tissue between "a validated CV pipeline"
+  and "a product you can point a browser at."
 - **Not yet done**: this hasn't run against a *complete* real game
   end-to-end (only short clips so far); cross-camera synchronization
   between a board camera and rack camera(s); the center-square logo issue
-  above; batching classifier calls for real per-frame speed (currently
-  ~5s/settled-frame on CPU, dominated by repeated single-image inference
-  on the still-occasionally-spurious occupied cells). See
-  `game_watcher.py`'s and `run_watcher.py`'s module docstrings for the
-  exact scope lines.
+  above (the very issue that produced those 61 pending moves in one
+  short clip -- next up); batching classifier calls for real per-frame
+  speed (currently ~5s/settled-frame on CPU, dominated by repeated
+  single-image inference on the still-occasionally-spurious occupied
+  cells). See `game_watcher.py`'s and `run_watcher.py`'s module
+  docstrings for the exact scope lines.
