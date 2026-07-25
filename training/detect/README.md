@@ -104,11 +104,25 @@ photos as a sanity check** (not a held-out test -- these photos were in
 not generalization): 15 of 16 real tiles across those 3 photos were
 detected with a correct label and a tight box at `--threshold 0.3`; one
 tile (an "L" in a 7-tile rack) was missed entirely. No false-positive
-boxes at that threshold. Promising for a first pass, not a real
-accuracy number -- **the actual test is running this against fresh real
-rack photos never used in training**, the same held-out discipline WS3
-used for the tile classifier. Do that before trusting this checkpoint
-for anything.
+boxes at that threshold. Promising, but not a real accuracy number.
+
+**Then ran it against one genuinely fresh real photo** (a 7-tile rack,
+"XETSREM", from a different move of the same game, never used in
+training) -- the actual test. Result was noticeably weaker: E, T, and S
+came back correct and tight; X was localized correctly but misclassified
+as "K"; the R tile produced two overlapping detections (one plausible,
+one spurious extra); the M tile was missed entirely. Roughly half the
+tiles clean, real failure modes on the rest (misclassification,
+duplicate boxes, a clean miss) -- not memorization, but not yet reliable
+either.
+
+**This is the same lesson WS3 already taught the tile classifier**: 45
+real boxes from 8 photos of one broadcast/camera setup isn't enough
+*diversity* for real generalization, even though it's enough to fit
+those exact photos well. The fix is almost certainly the same one that
+worked there -- more real photos from *different* games/venues/cameras,
+not just more frames of the same one -- rather than more epochs on this
+same 45-box set. Do this before trusting the checkpoint for anything.
 
 ## What's real vs. synthetic right now
 
