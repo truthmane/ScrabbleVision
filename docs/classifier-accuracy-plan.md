@@ -4,7 +4,8 @@
 out better-than-planned as tooling (a GCG-record parser/replay engine, validated against 6 real
 NASPA 2026 games with exact score reproduction) and, once real venue diversity was added rather
 than more frames of one venue, **did move held-out accuracy: 60.6% → 64.6%**. WS4's constraint
-decoder is now actually wired into the pipeline (not just unit-tested) and WS5's end-to-end
+decoder is now actually wired into the pipeline (not just unit-tested), temporal voting (M2) is
+built and validated against 5 genuine consecutive broadcast frames, and WS5's end-to-end
 game-replay metric is real, run against 6 harvested real moves: **3/6 auto-published (all
 correct), 3/6 correctly routed to operator, 0/6 silent failures** — see the WS4/WS5 sections for
 the full story.
@@ -214,13 +215,24 @@ needs. `training/collect/eval_harvested_moves.py` puts the two together against 
 photos and real official scores (see below) — the first time constraint decoding has run against
 anything but its own unit tests.
 
-Not done: **temporal voting** (needs live video, not applicable to static frame evaluation) and
-the **dictionary-scored beam search** half of constraint decoding (needs a real TWL/CSW word
-list wired into `dictionary/lookup.py`, which is still a stub). Racks still aren't visible to this
-pipeline (no rack camera yet — Phase 5), so `decode_feasible_reading` is currently called with
-`racks=[]`; the pool-feasibility budget is therefore slightly looser than it will be once rack
-contents are known, but this doesn't invalidate anything below — a looser budget can only ever
-accept more candidates as feasible, never wrongly reject a correct one.
+**Temporal voting is now done too**: `autoscorer/gamelogic/movedetect/temporal_vote.py` averages
+each cell's full class-probability distribution across multiple frames of the same stable board
+state (the M2 lever — "per-tile after temporal voting over ≥5 stable frames"), and
+`board_reader.read_new_cells_voted` wires it into the same per-turn-diffing path `read_new_cells`
+uses. Validated against 5 genuine consecutive frames pulled from the broadcast (not part of any
+training data, ~3 seconds apart during the FOISTED move's board-stable window): single-frame
+classification got 3/7 cells of that move right; voting across all 5 frames got 4/7 — a real,
+modest, measured improvement, not just a theoretical one. Both blanks in that move stayed
+misread even after voting (this checkpoint clearly still struggles specifically with blanks on
+this tile style) — voting fixes transient single-frame noise, it doesn't fix a systematic
+per-class weakness, which is a data/training problem instead.
+
+Not done: the **dictionary-scored beam search** half of constraint decoding (needs a real
+TWL/CSW word list wired into `dictionary/lookup.py`, which is still a stub). Racks still aren't
+visible to this pipeline (no rack camera yet — Phase 5), so `decode_feasible_reading` is
+currently called with `racks=[]`; the pool-feasibility budget is therefore slightly looser than
+it will be once rack contents are known, but this doesn't invalidate anything below — a looser
+budget can only ever accept more candidates as feasible, never wrongly reject a correct one.
 
 ### WS5 — Honest evaluation harness (do first, actually) — ✅ DONE
 
