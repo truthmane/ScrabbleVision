@@ -56,14 +56,14 @@ not to produce a usable model. 1 epoch on 8 tiny images will not detect
 anything useful. Confirmed working this way: 8 images, 1 epoch, CPU,
 ran clean end-to-end in well under a minute.
 
-**`--device mps` on a full-size dataset is not a substitute for a real
-GPU** -- tried it (2008 train images, RF-DETR-nano) and a single epoch
-was still under 100/502 steps after 6 minutes. Apple Silicon's MPS
-backend clearly isn't accelerating this model's operations the way CUDA
-does; don't expect a meaningful checkpoint from an overnight MPS run on
-the full dataset. Use MPS only for the tiny smoke test above (where slow
-is fine because there's almost nothing to do), and do the real run on
-an actual CUDA GPU.
+**`--device mps` on a full-size dataset works, but has a slow first
+epoch** -- tried it (2008 train images, RF-DETR-nano): epoch 1 alone
+took ~10 minutes (looked stalled at first -- under 100/502 steps after
+6 minutes -- almost certainly MPS kernel compilation/caching warm-up),
+but every epoch after that took only ~9 minutes, and the full 10-epoch
+run finished in about 95 minutes total. Slower than a real GPU would be,
+but usable overnight if you don't want to wait for a RunPod pod to
+provision. See "First local result" below for what that run produced.
 
 ### Real training run (RunPod or similar)
 
@@ -88,6 +88,27 @@ python -m training.detect.train_rack_detector /workspace/rack_detect_dataset \
 `train_rack_detector.MODEL_CLASSES`) -- start with `nano`, the smallest
 and fastest to iterate with; step up only if held-out accuracy on the
 synthetic valid/test splits demands it.
+
+## First local result (RF-DETR-nano, 10 epochs, MPS, 2026-07-25)
+
+Trained on the exact dataset `build_dataset` produces by default (2008
+train / 300 valid / 300 test synthetic scenes + the 45 real boxes).
+Synthetic valid mAP@50:95 reached 0.999 by epoch 10 -- expected, since
+synthetic scenes are easier than real photos and this checkpoint has
+seen real examples of literally every training photo, so that number
+alone proves very little about real-world performance.
+
+**Ran `visualize_rack_detections.py` against 3 of the 8 real training
+photos as a sanity check** (not a held-out test -- these photos were in
+`train`, so this checks "did the pipeline learn anything real at all,"
+not generalization): 15 of 16 real tiles across those 3 photos were
+detected with a correct label and a tight box at `--threshold 0.3`; one
+tile (an "L" in a 7-tile rack) was missed entirely. No false-positive
+boxes at that threshold. Promising for a first pass, not a real
+accuracy number -- **the actual test is running this against fresh real
+rack photos never used in training**, the same held-out discipline WS3
+used for the tile classifier. Do that before trusting this checkpoint
+for anything.
 
 ## What's real vs. synthetic right now
 
