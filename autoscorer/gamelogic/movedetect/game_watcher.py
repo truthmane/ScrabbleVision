@@ -61,6 +61,7 @@ from autoscorer.gamelogic.publish import PendingMove, PublishGateway
 from autoscorer.gamelogic.scoring.rules_engine import score_move
 from autoscorer.perception.board_reader import read_new_cells_voted, read_rack, rack_observations_to_tiles
 from autoscorer.perception.calibration.homography import BoardCalibration
+from autoscorer.perception.occupancy.detector import DEFAULT_DIFF_THRESHOLD, DEFAULT_GRADIENT_THRESHOLD
 from autoscorer.perception.stillness.detector import (
     DEFAULT_MOTION_THRESHOLD,
     DEFAULT_STILL_FRAME_COUNT,
@@ -113,6 +114,8 @@ class GameWatcher:
         rack_detector=None,
         motion_threshold: float = DEFAULT_MOTION_THRESHOLD,
         still_frame_count: int = DEFAULT_STILL_FRAME_COUNT,
+        occupancy_diff_threshold: float = DEFAULT_DIFF_THRESHOLD,
+        occupancy_gradient_threshold: float = DEFAULT_GRADIENT_THRESHOLD,
     ) -> None:
         self.calibration = calibration
         self.reference_board = reference_board
@@ -121,6 +124,8 @@ class GameWatcher:
         self.rack_detector = rack_detector
         self.motion_threshold = motion_threshold
         self.still_frame_count = still_frame_count
+        self.occupancy_diff_threshold = occupancy_diff_threshold
+        self.occupancy_gradient_threshold = occupancy_gradient_threshold
 
         self.board = BoardState()
         self.racks: Dict[str, List[Tile]] = {}
@@ -153,6 +158,8 @@ class GameWatcher:
         candidates = read_new_cells_voted(
             window, self.calibration, self.reference_board, self.classifier, self.board,
             top_k=len(self.classifier.classes),
+            diff_threshold=self.occupancy_diff_threshold,
+            gradient_threshold=self.occupancy_gradient_threshold,
         )
         if not candidates:
             # Settled, but nothing new since the last processed turn --

@@ -1,4 +1,6 @@
+import cv2
 import numpy as np
+import pytest
 
 from autoscorer.perception.calibration.homography import CANONICAL_SIZE
 from autoscorer.perception.calibration.venue_profile import (
@@ -7,6 +9,7 @@ from autoscorer.perception.calibration.venue_profile import (
     load_venue_profile,
     save_venue_profile,
 )
+from autoscorer.perception.occupancy.detector import DEFAULT_DIFF_THRESHOLD, DEFAULT_GRADIENT_THRESHOLD
 
 
 def _sample_profile(name="test_venue") -> VenueProfile:
@@ -64,3 +67,51 @@ def test_real_wespa_profile_is_saved_and_loadable():
     assert len(profile.corners) == 4
     calibration = profile.calibration()
     assert calibration.homography.shape == (3, 3)
+
+
+def test_real_wespa_profile_has_occupancy_thresholds_tuned_away_from_naspa_defaults():
+    # Confirms the real, measured fix stuck: NASPA-tuned defaults caused
+    # 47/225 real empty WESPA cells to score as spuriously occupied (busy
+    # premium-square graphics the defaults never had to reject) -- this
+    # profile should carry venue-specific values, not silently fall back
+    # to the defaults tuned for a different board's graphics.
+    profile = load_venue_profile("wespa_word_wars")
+    assert profile.occupancy_diff_threshold != DEFAULT_DIFF_THRESHOLD
+    assert profile.occupancy_gradient_threshold != DEFAULT_GRADIENT_THRESHOLD
+
+
+def test_occupancy_thresholds_default_to_module_defaults_when_unset():
+    profile = _sample_profile()
+    assert profile.occupancy_diff_threshold == DEFAULT_DIFF_THRESHOLD
+    assert profile.occupancy_gradient_threshold == DEFAULT_GRADIENT_THRESHOLD
+    assert profile.reference_board_path is None
+
+
+def test_load_reference_board_raises_when_path_not_set():
+    profile = _sample_profile()
+    with pytest.raises(ValueError):
+        profile.load_reference_board()
+
+
+def test_load_reference_board_raises_when_file_missing(tmp_path):
+    profile = VenueProfile(
+        name="test_venue",
+        corners=((10.0, 20.0), (500.0, 15.0), (510.0, 480.0), (5.0, 490.0)),
+        reference_board_path=str(tmp_path / "does_not_exist.jpg"),
+    )
+    with pytest.raises(FileNotFoundError):
+        profile.load_reference_board()
+
+
+def test_load_reference_board_reads_the_saved_image(tmp_path):
+    image = np.full((60, 80, 3), 123, dtype=np.uint8)
+    image_path = tmp_path / "reference.jpg"
+    cv2.imwrite(str(image_path), image)
+
+    profile = VenueProfile(
+        name="test_venue",
+        corners=((10.0, 20.0), (500.0, 15.0), (510.0, 480.0), (5.0, 490.0)),
+        reference_board_path=str(image_path),
+    )
+    loaded = profile.load_reference_board()
+    assert loaded.shape == (60, 80, 3)

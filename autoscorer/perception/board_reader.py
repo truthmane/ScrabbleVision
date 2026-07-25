@@ -27,7 +27,7 @@ from autoscorer.gamelogic.board import BOARD_SIZE, BoardState, Coord, Tile
 from autoscorer.gamelogic.movedetect.constraint_decoder import CellCandidates
 from autoscorer.gamelogic.movedetect.temporal_vote import temporal_vote
 from autoscorer.perception.calibration.homography import BoardCalibration, crop_cell
-from autoscorer.perception.occupancy.detector import detect_occupancy
+from autoscorer.perception.occupancy.detector import DEFAULT_DIFF_THRESHOLD, DEFAULT_GRADIENT_THRESHOLD, detect_occupancy
 from training.classify.infer import TileClassifierModel
 
 
@@ -44,12 +44,23 @@ def read_board(
     calibration: BoardCalibration,
     reference_board: np.ndarray,
     classifier: TileClassifierModel,
+    diff_threshold: float = DEFAULT_DIFF_THRESHOLD,
+    gradient_threshold: float = DEFAULT_GRADIENT_THRESHOLD,
 ) -> List[CellObservation]:
     """One observation per occupied cell (never for empty ones -- those
     are filtered by occupancy detection before the classifier ever runs).
+
+    `diff_threshold`/`gradient_threshold` default to the values calibrated
+    against the original NASPA broadcast (see occupancy/detector.py) --
+    **do not trust those defaults for a new venue.** A venue with busier
+    premium-square graphics (printed "DOUBLE LETTER SCORE" text, e.g. the
+    WESPA broadcast) can score real empty cells well above these defaults
+    on both signals, causing the classifier to fire on dozens of spurious
+    "occupied" cells every call. Pull the tuned values from that venue's
+    `VenueProfile` instead (see perception/calibration/venue_profile.py).
     """
     rectified = calibration.rectify(raw_frame)
-    occupancy = detect_occupancy(rectified, reference_board)
+    occupancy = detect_occupancy(rectified, reference_board, diff_threshold, gradient_threshold)
 
     observations = []
     for row in range(BOARD_SIZE):
@@ -76,6 +87,8 @@ def read_new_cells(
     classifier: TileClassifierModel,
     board_before: BoardState,
     top_k: int = 3,
+    diff_threshold: float = DEFAULT_DIFF_THRESHOLD,
+    gradient_threshold: float = DEFAULT_GRADIENT_THRESHOLD,
 ) -> List[CellCandidates]:
     """Like `read_board`, but scoped to exactly one turn's new tiles (cells
     occupied in this frame but empty in `board_before`) and returning each
@@ -87,9 +100,12 @@ def read_new_cells(
     the WS4 section of docs/classifier-accuracy-plan.md): `read_board`
     reads the whole board every call, which only makes sense for a
     one-shot read, not for scoring what changed on a single turn.
+
+    See `read_board`'s docstring on `diff_threshold`/`gradient_threshold` --
+    the defaults are NASPA-specific; use a venue's own tuned values.
     """
     rectified = calibration.rectify(raw_frame)
-    occupancy = detect_occupancy(rectified, reference_board)
+    occupancy = detect_occupancy(rectified, reference_board, diff_threshold, gradient_threshold)
 
     results = []
     for row in range(BOARD_SIZE):
@@ -111,6 +127,8 @@ def read_new_cells_voted(
     classifier: TileClassifierModel,
     board_before: BoardState,
     top_k: int = 3,
+    diff_threshold: float = DEFAULT_DIFF_THRESHOLD,
+    gradient_threshold: float = DEFAULT_GRADIENT_THRESHOLD,
 ) -> List[CellCandidates]:
     """Like `read_new_cells`, but combines classifier readings across
     several frames of the *same* stable board moment via
@@ -125,13 +143,21 @@ def read_new_cells_voted(
     plan's move-detection state machine) is responsible for guaranteeing.
     Occupancy is decided from the first frame only; a genuinely stable
     sequence shouldn't disagree on which cells are occupied.
+
+    See `read_board`'s docstring on `diff_threshold`/`gradient_threshold` --
+    **getting these wrong here is expensive, not just inaccurate**: every
+    cell occupancy spuriously flags as "new" gets classified across all
+    `len(raw_frames)` frames at `top_k=len(classifier.classes)`, so loose
+    thresholds on a venue with busy premium squares can turn a handful of
+    real new cells into dozens of spurious ones and multiply the
+    classifier calls per observation accordingly.
     """
     if not raw_frames:
         raise ValueError("read_new_cells_voted needs at least one frame")
 
     num_classes = len(classifier.classes)
     rectified_frames = [calibration.rectify(frame) for frame in raw_frames]
-    occupancy = detect_occupancy(rectified_frames[0], reference_board)
+    occupancy = detect_occupancy(rectified_frames[0], reference_board, diff_threshold, gradient_threshold)
 
     results = []
     for row in range(BOARD_SIZE):

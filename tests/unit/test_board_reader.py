@@ -126,6 +126,40 @@ def test_read_new_cells_excludes_cells_already_in_board_before(tmp_path):
         assert all(isinstance(label, str) and isinstance(conf, float) for label, conf in cc.candidates)
 
 
+def test_read_new_cells_respects_custom_occupancy_thresholds(tmp_path):
+    # Stands in for the real WESPA finding: a venue's busy premium-square
+    # graphics can create incidental diff/gradient signal even with no
+    # tile present, causing the NASPA-tuned defaults to spuriously flag
+    # empty cells as occupied. A brightness shift with no real texture
+    # (unlike a genuine tile) triggers `diff` but barely moves `gradient`,
+    # so a caller who knows this venue's tuned (higher) thresholds should
+    # be able to exclude it while still detecting the real placement.
+    classifier = _train_tiny_classifier(tmp_path)
+    reference = _blank_board_image()
+    current = reference.copy()
+    rng = random.Random(9)
+    _place_tile(current, 4, 0, "A", rng)
+
+    x1, y1, x2, y2 = cell_bounds(6, 6)
+    shifted = np.clip(current[y1:y2, x1:x2].astype(np.int16) + 60, 0, 255).astype(np.uint8)
+    current[y1:y2, x1:x2] = shifted
+
+    board_before = BoardState()
+
+    default_candidates = read_new_cells(current, IDENTITY_CALIBRATION, reference, classifier, board_before, top_k=2)
+    default_coords = {cc.coord for cc in default_candidates}
+    assert (6, 6) in default_coords, "the brightness-shifted empty cell should spuriously read as occupied by default"
+    assert (4, 0) in default_coords
+
+    tuned_candidates = read_new_cells(
+        current, IDENTITY_CALIBRATION, reference, classifier, board_before, top_k=2,
+        diff_threshold=50.0, gradient_threshold=150.0,
+    )
+    tuned_coords = {cc.coord for cc in tuned_candidates}
+    assert (6, 6) not in tuned_coords, "a venue-tuned (higher) threshold should exclude the spurious cell"
+    assert (4, 0) in tuned_coords, "the genuine placement must still be detected regardless of threshold"
+
+
 def test_read_new_cells_voted_outvotes_a_single_bad_frame(tmp_path):
     # Four frames genuinely show an "A" tile at (4, 0); a fifth frame
     # shows a "T" tile there instead -- standing in for a single bad look
