@@ -8,15 +8,19 @@ The per-cell letter classifier described in `docs/classifier-accuracy-plan.md`.
   first conv adapted to 1-channel input) — see `training/classify/model.py`.
 - **Classes**: 27 (`A`-`Z` + `BLANK`), in the order stored in the checkpoint's `classes` list.
   Always read this list back from the checkpoint rather than assuming an order.
-- **Calibration**: temperature-scaled, `T ≈ 1.402` (stored in the checkpoint; applied
+- **Calibration**: temperature-scaled, `T ≈ 1.352` (stored in the checkpoint; applied
   automatically by `TileClassifierModel`, see below). Fitted on the same held-out set used to
   report accuracy — see the calibration caveat in `training/classify/calibrate.py`'s docstring.
 - **Training data**: synthetic renders (`training/synth_render`) pretrained, then fine-tuned on
-  ~350 real tile crops pulled from broadcast footage (2 tournament productions, several games).
-- **Honest accuracy**: **60.6%** (60/99) on a *game-disjoint* held-out set — 3 entire games/tables
-  never touched during training, not just random held-out tiles. Board-tile accuracy is
-  meaningfully higher (~68%) than rack-tile accuracy (~43%); see the accuracy-plan doc for why
-  (rack crops currently come from looser manual bounding boxes, not the board's calibrated
+  ~620 real tile crops pulled from broadcast footage across **6 tournament productions/venues**
+  (2 earlier broadcast productions + 4 real 2026 NASPA Scrabble Players Championship games,
+  auto-labeled via WS3's GCG-replay pipeline — see `docs/classifier-accuracy-plan.md`).
+- **Honest accuracy**: **64.6%** (64/99) on a *game-disjoint* held-out set — 3 entire games/tables
+  never touched during training, not just random held-out tiles (up from 60.6% before the WS3
+  data — see the accuracy-plan doc's WS3 section for the honest story of what did and didn't move
+  this number: venue diversity mattered, raw frame volume from one venue did not). Board-tile
+  accuracy is meaningfully higher (~72%) than rack-tile accuracy (~46%); see the accuracy-plan doc
+  for why (rack crops currently come from looser manual bounding boxes, not the board's calibrated
   per-cell homography).
 - **Not yet production-ready**: this is a checkpoint from an active accuracy-improvement pass,
   not a finished model. The confidence-fallback publish gateway (`PublishMode

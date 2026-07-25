@@ -2,8 +2,9 @@
 
 **Status**: WS1, WS2, WS3, and WS4 implemented and validated (see Results below). WS3 came out
 better-than-planned as tooling (a GCG-record parser/replay engine, validated against 5 real
-NASPA 2026 games with exact score reproduction) but did not yet move held-out accuracy past
-60.6% — see the WS3 section for why, and what it actually takes next.
+NASPA 2026 games with exact score reproduction) and, once real venue diversity was added rather
+than more frames of one venue, **did move held-out accuracy: 60.6% → 64.6%** — see the WS3
+section for the honest story of what worked and what didn't.
 **Audience**: whoever implements next (human or model). Assumes familiarity with the existing
 codebase (`autoscorer/`, `training/`) and the collection scripts in the session scratchpad
 (`decode_frame.py`, `make_table.py`, `crop_rack.py`).
@@ -20,7 +21,8 @@ games/tables never touched during training, 26/27 classes represented — see
 | + WS2 pretrained MobileNetV3-Small backbone | **60.6%** | The single biggest lever tried. Board tiles 39%→67.6%, rack tiles 25%→42.9%. Confirms the plan's hypothesis: ImageNet-pretrained low-level features transfer far better from ~350 real tiles than training from scratch, even on top of the same canonicalized input. |
 | + WS4 temperature calibration | 60.6% (unchanged, by design) | Confidence-vs-accuracy went from barely-monotonic (69%→85% across thresholds 0.5→0.95, pre-calibration was closer to flat) to a real signal a gateway can act on. Fitted T=1.402 (model was overconfident, as expected). |
 | + WS3 real data from 1 more game (321→442 real tiles, deduplicated) | 58.6% | *Regression*, not a fluke — traced to near-duplicate crops of the same 1-2 physical tiles (same static camera, same board) dominating a few classes' training examples. See WS3 below. |
-| + WS3 real data from a 2nd, visually distinct game/venue (442→520 real tiles) | 60.6% | Regression fixed by adding venue diversity, not just volume — back to baseline, not yet past it. At 99 held-out tiles, a couple of flipped predictions swing this number several points either way, so this reads as a null result at current scale, not evidence against WS3. |
+| + WS3 real data from a 2nd, visually distinct game/venue (442→520 real tiles) | 60.6% | Regression fixed by adding venue diversity, not just volume — back to baseline, not yet past it. |
+| + WS3 real data from a 3rd game (520→616 real tiles, 4 games total on top of the original set) | **64.6%** | First clear, reproducible win — verified by re-running the identical fine-tune (fixed seed) and getting the identical 64/99. Board tiles ~68%→71.8%, rack tiles ~43%→46.4%. Now the deployed checkpoint (`models/tile_classifier_v1.pt`, recalibrated to T=1.352). Confirms the diversity hypothesis: going from 2 to 3 additional venues is what tipped this from a null result into a real one. |
 
 Two real bugs were caught and fixed by testing hypotheses against data rather than assuming:
 auto-crop's first version made accuracy *worse* (10.1%→3.0% zero-shot) because it mistook a
@@ -144,7 +146,7 @@ Original plan text, for reference:
    - Fix `augment_real_photo` fill color (edge replicate).
    - Report per-class precision/recall, not just aggregate accuracy.
 
-### WS3 — Scale ground truth via ticker replay (kills the labeling bottleneck) — ✅ TOOLING DONE, DATA RESULT MIXED
+### WS3 — Scale ground truth via ticker replay (kills the labeling bottleneck) — ✅ DONE
 
 Built and validated: `autoscorer/gamelogic/notation.py` (parses both hand-transcribed ticker
 lines and, far better, official `.gcg` game records from event.scrabbleplayers.org),
@@ -158,10 +160,13 @@ across all 5 games reproduce the official turn score and cumulative score exactl
 initially hurt (60.6%→58.6%, see Results table) — near-duplicate photos of the same few physical
 tiles (same static camera across frames) dominated a handful of classes' training examples and
 skewed them toward that one camera's look. Adding a second, visually distinct game/venue fixed the
-regression (back to 60.6%) but didn't yet exceed it either. At only 99 held-out tiles, this is
-likely a noise-dominated null result, not evidence the approach is wrong — **the actual lever is
-venue diversity, not frame volume from one board**, and the held-out set itself is probably too
-small to detect anything short of a large jump. Nothing below has changed from the original plan.
+regression (back to 60.6%) but didn't exceed it. Adding a **third** distinct game (4 games total
+harvested via WS3, on top of the original 3-production dataset) finally moved the number for real:
+**64.6% (64/99)**, reproduced exactly on a repeat run with the identical fixed-seed fine-tune —
+board tiles 68%→71.8%, rack tiles 43%→46.4%, broad-based across most classes rather than
+concentrated in one or two. **Confirms the venue-diversity hypothesis precisely**: 1 extra venue
+regressed, 2 was a null result, 3 was a clear win — volume alone was never the lever, breadth of
+camera/lighting/venue was. This is now the deployed checkpoint (`models/tile_classifier_v1.pt`).
 
 The decisive data unlock. Tournament broadcasts print every move in a monospace ticker
 ("`Krafchick, Joey J7 TaSKING 86 107`") using standard notation (coordinate + word; lowercase

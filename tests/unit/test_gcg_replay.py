@@ -7,7 +7,7 @@ from training.collect.replay_game import read_gcg_moves, replay_gcg_game
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 FIXTURE = FIXTURES_DIR / "spc2026_final_game1.gcg"
 
-# Five real games from the 2026 NASPA Scrabble Players Championship
+# Six real games from the 2026 NASPA Scrabble Players Championship
 # (event.scrabbleplayers.org), spanning different player pairs and rounds
 # -- including the eventual champion's own finals games, exchanges, and
 # multiple bingos -- so this isn't just one lucky game replaying cleanly.
@@ -17,6 +17,7 @@ ALL_FIXTURES = [
     FIXTURES_DIR / "spc2026_game9.gcg",
     FIXTURES_DIR / "spc2026_final_game3.gcg",
     FIXTURES_DIR / "spc2026_game22.gcg",
+    FIXTURES_DIR / "spc2026_game25.gcg",
 ]
 
 
