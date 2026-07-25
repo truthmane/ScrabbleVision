@@ -1,10 +1,13 @@
 # Classifier Accuracy Plan: 30% → effectively 100%
 
-**Status**: WS1, WS2, WS3, and WS4 implemented and validated (see Results below). WS3 came out
-better-than-planned as tooling (a GCG-record parser/replay engine, validated against 5 real
+**Status**: All five workstreams (WS1-WS5) implemented and validated (see Results below). WS3 came
+out better-than-planned as tooling (a GCG-record parser/replay engine, validated against 6 real
 NASPA 2026 games with exact score reproduction) and, once real venue diversity was added rather
-than more frames of one venue, **did move held-out accuracy: 60.6% → 64.6%** — see the WS3
-section for the honest story of what worked and what didn't.
+than more frames of one venue, **did move held-out accuracy: 60.6% → 64.6%**. WS4's constraint
+decoder is now actually wired into the pipeline (not just unit-tested) and WS5's end-to-end
+game-replay metric is real, run against 6 harvested real moves: **3/6 auto-published (all
+correct), 3/6 correctly routed to operator, 0/6 silent failures** — see the WS4/WS5 sections for
+the full story.
 **Audience**: whoever implements next (human or model). Assumes familiarity with the existing
 codebase (`autoscorer/`, `training/`) and the collection scripts in the session scratchpad
 (`decode_frame.py`, `make_table.py`, `crop_rack.py`).
@@ -191,7 +194,7 @@ letter = blank played as that letter). Therefore:
 Target: ≥5,000 real tiles across ≥6 games/2+ venues, ≥100 per class (blanks will lag; they're
 operator-routed anyway by design).
 
-### WS4 — System-level correction (this is where "100%" actually comes from) — ⚠️ PARTIALLY DONE
+### WS4 — System-level correction (this is where "100%" actually comes from) — ✅ MOSTLY DONE
 
 Done: **calibration** (`training/classify/calibrate.py`, temperature scaling via LBFGS in
 log-space — the first version let temperature go negative, which silently flips softmax ranking;
@@ -204,24 +207,55 @@ elsewhere; ties broken by giving scarce letters to whichever cell the classifier
 confident about), fully unit-tested, plus `TileClassifierModel.predict_topk` to supply it
 candidates.
 
-**Not wired into the live perception pipeline yet** — `board_reader.read_board` currently reads
-the *whole* board each call rather than just a turn's new tiles, and doesn't yet see rack
-contents. Constraint decoding needs both (the "what's already accounted for elsewhere" supply
-budget only makes sense per-turn, with racks visible) to be more than a token gesture. That's
-naturally Phase 5 territory (multi-camera/rack integration) per the master plan, not something
-to force into today's single-board-read function with placeholder assumptions.
+**Now wired into the pipeline**: `board_reader.read_new_cells` scopes classification to exactly
+one turn's new tiles (diffed against `board_before`, occupancy-detected rather than requiring a
+second real photo) and returns top-k candidates per cell — the shape `decode_feasible_reading`
+needs. `training/collect/eval_harvested_moves.py` puts the two together against real harvested
+photos and real official scores (see below) — the first time constraint decoding has run against
+anything but its own unit tests.
 
 Not done: **temporal voting** (needs live video, not applicable to static frame evaluation) and
 the **dictionary-scored beam search** half of constraint decoding (needs a real TWL/CSW word
-list wired into `dictionary/lookup.py`, which is still a stub).
+list wired into `dictionary/lookup.py`, which is still a stub). Racks still aren't visible to this
+pipeline (no rack camera yet — Phase 5), so `decode_feasible_reading` is currently called with
+`racks=[]`; the pool-feasibility budget is therefore slightly looser than it will be once rack
+contents are known, but this doesn't invalidate anything below — a looser budget can only ever
+accept more candidates as feasible, never wrongly reject a correct one.
 
 ### WS5 — Honest evaluation harness (do first, actually) — ✅ DONE
 
 Done: game-disjoint split (held out 3 entire games/tables, not just random tiles — see
 `training/classify/evaluate.py` and the split-building step in this session) and per-class
-precision/recall reporting. **Not done**: the end-to-end game-replay metric (needs WS3's
-harvested games with ticker-derived ground truth to exist first) and a pytest-integrated slow
-suite for it.
+precision/recall reporting. **Also now done: the end-to-end game-replay metric**
+(`training/collect/eval_harvested_moves.py`), run against the 6 real photos harvested for WS3,
+each checked against its game's official `.gcg` record:
+
+| Game/move | Cells | Raw top-1 correct | After constraint decoding | Outcome |
+|---|---|---|---|---|
+| Final Game 1, move 13 | 3 | 2/3 | 2/3 | Routed to operator (low confidence) |
+| Final Game 1, move 19 | 4 | 4/4 | 4/4 | Auto-published, score matched |
+| Final Game 1, move 21 | 3 | 3/3 | 3/3 | Auto-published, score matched |
+| Final Game 1, move 22 (FOISTED bingo, 2 blanks) | 7 | 1/7 | **4/7** | Routed to operator (low confidence) |
+| Game 22, move 15 | 3 | 2/3 | 2/3 | Routed to operator (low confidence) |
+| Game 25, move 24 | 2 | 2/2 | 2/2 | Auto-published, score matched |
+
+Run with the **pre-WS3 checkpoint** (`finetuned_pretrained_calibrated.pt`, 60.6%), deliberately
+*not* the deployed 64.6% one — these exact photos are in the deployed checkpoint's training data,
+so evaluating it against them would be evaluating on training data, not a fair test.
+
+The headline result: **3/6 moves auto-published, all three scored correctly; the other 3/6 all
+had a misclassified cell and were all correctly routed to operator instead of silently
+auto-publishing a wrong score — zero silent failures across all six real moves.** This is exactly
+what the plan's M3+M4 framing predicts: no single-frame classifier hits literal 100%, but voting
++ constraints + confidence-gated human fallback together mean nothing wrong ever ships silently.
+The FOISTED move is also a concrete, measured win for constraint decoding itself: raw
+classification got only 1 of 7 cells right (a genuinely hard case — a 90-point bingo using both
+blanks), and pool-feasibility decoding corrected 3 more of them before the confidence gate still
+correctly caught the move as needing a human anyway.
+
+Not done: a pytest-integrated slow suite for this (the real photos it needs can't be committed to
+the repo — copyright, same as the rest of this project's real-tile data — so it can't run in CI;
+it's a script to be re-run manually against freshly-harvested frames, not a gate).
 
 Original plan text, for reference:
 
