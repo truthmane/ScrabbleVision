@@ -1,7 +1,9 @@
 # Classifier Accuracy Plan: 30% → effectively 100%
 
-**Status**: WS1, WS2, and WS4 implemented and validated this session (see Results below).
-WS3 (ticker-replay data scaling) is scoped but not started — the next concrete step.
+**Status**: WS1, WS2, WS3, and WS4 implemented and validated (see Results below). WS3 came out
+better-than-planned as tooling (a GCG-record parser/replay engine, validated against 5 real
+NASPA 2026 games with exact score reproduction) but did not yet move held-out accuracy past
+60.6% — see the WS3 section for why, and what it actually takes next.
 **Audience**: whoever implements next (human or model). Assumes familiarity with the existing
 codebase (`autoscorer/`, `training/`) and the collection scripts in the session scratchpad
 (`decode_frame.py`, `make_table.py`, `crop_rack.py`).
@@ -17,6 +19,8 @@ games/tables never touched during training, 26/27 classes represented — see
 | + auto-crop-to-tile (found via board-vs-rack breakdown) | 32.3% (flat overall, but rack tiles 10.7%→25.0%) | Board/rack accuracy breakdown revealed rack crops' loose manual bounding boxes were leaving glyphs tiny/off-center relative to training data — a framing bug, not a color bug. |
 | + WS2 pretrained MobileNetV3-Small backbone | **60.6%** | The single biggest lever tried. Board tiles 39%→67.6%, rack tiles 25%→42.9%. Confirms the plan's hypothesis: ImageNet-pretrained low-level features transfer far better from ~350 real tiles than training from scratch, even on top of the same canonicalized input. |
 | + WS4 temperature calibration | 60.6% (unchanged, by design) | Confidence-vs-accuracy went from barely-monotonic (69%→85% across thresholds 0.5→0.95, pre-calibration was closer to flat) to a real signal a gateway can act on. Fitted T=1.402 (model was overconfident, as expected). |
+| + WS3 real data from 1 more game (321→442 real tiles, deduplicated) | 58.6% | *Regression*, not a fluke — traced to near-duplicate crops of the same 1-2 physical tiles (same static camera, same board) dominating a few classes' training examples. See WS3 below. |
+| + WS3 real data from a 2nd, visually distinct game/venue (442→520 real tiles) | 60.6% | Regression fixed by adding venue diversity, not just volume — back to baseline, not yet past it. At 99 held-out tiles, a couple of flipped predictions swing this number several points either way, so this reads as a null result at current scale, not evidence against WS3. |
 
 Two real bugs were caught and fixed by testing hypotheses against data rather than assuming:
 auto-crop's first version made accuracy *worse* (10.1%→3.0% zero-shot) because it mistook a
@@ -140,11 +144,24 @@ Original plan text, for reference:
    - Fix `augment_real_photo` fill color (edge replicate).
    - Report per-class precision/recall, not just aggregate accuracy.
 
-### WS3 — Scale ground truth via ticker replay (kills the labeling bottleneck) — ⏳ NOT STARTED
+### WS3 — Scale ground truth via ticker replay (kills the labeling bottleneck) — ✅ TOOLING DONE, DATA RESULT MIXED
 
-Still the recommended next step — see Results above for why (WS2 already outperformed its own
-estimate on less data than WS3 targets; more real data feeding the now-working backbone should
-compound). Nothing below has changed from the original plan.
+Built and validated: `autoscorer/gamelogic/notation.py` (parses both hand-transcribed ticker
+lines and, far better, official `.gcg` game records from event.scrabbleplayers.org),
+`training/collect/replay_game.py` (replays either through the real `GameSession`/rules engine),
+and `training/collect/harvest_from_replay.py` (auto-crops every occupied cell of a rectified real
+photo and labels it from the replayed board state — zero manual reading). Validated against 5
+real 2026 NASPA Scrabble Players Championship games (`tests/fixtures/*.gcg`) — **all real turns
+across all 5 games reproduce the official turn score and cumulative score exactly.**
+
+**The data result, honestly**: harvesting more frames from a *single* game/venue didn't help, and
+initially hurt (60.6%→58.6%, see Results table) — near-duplicate photos of the same few physical
+tiles (same static camera across frames) dominated a handful of classes' training examples and
+skewed them toward that one camera's look. Adding a second, visually distinct game/venue fixed the
+regression (back to 60.6%) but didn't yet exceed it either. At only 99 held-out tiles, this is
+likely a noise-dominated null result, not evidence the approach is wrong — **the actual lever is
+venue diversity, not frame volume from one board**, and the held-out set itself is probably too
+small to detect anything short of a large jump. Nothing below has changed from the original plan.
 
 The decisive data unlock. Tournament broadcasts print every move in a monospace ticker
 ("`Krafchick, Joey J7 TaSKING 86 107`") using standard notation (coordinate + word; lowercase
