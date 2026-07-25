@@ -40,3 +40,39 @@ label, confidence = model.predict(image)  # image: PIL.Image or RGB numpy array
 `TileClassifierModel` reads `model_type`, `classes`, and `temperature` out of the checkpoint
 itself and applies the matching canonicalization transform automatically — no need to know any
 of this to use it correctly, it's documented here for anyone inspecting the file directly.
+
+## `rack_detector_v1.pth`
+
+The rack-tile object detector described in `training/detect/README.md`. Stored via **Git LFS**
+(see `.gitattributes`) since it's ~115MB, over GitHub's 100MB per-file limit for regular commits.
+
+- **Architecture**: RF-DETR-nano (`rfdetr.RFDETRNano`) — a real-time-oriented detection
+  transformer (Roboflow), fine-tuned on a single RunPod RTX 4090.
+- **Classes**: 27 (`A`-`Z` + `BLANK`), same vocabulary as the tile classifier above — but this
+  model only *localizes* tiles; letter classification is deliberately left to
+  `tile_classifier_v1.pt` (see `read_rack` in `autoscorer/perception/board_reader.py`), not this
+  checkpoint's own class predictions.
+- **Training data**: unlimited synthetic rack scenes (`training/synth_render/rack_scene_renderer.py`)
+  plus 136 real tile boxes from **3 distinct venues/productions** (2026 NASPA broadcast, "Let's
+  Play Scrabble"/CSW production, WESPA Word Wars), folded into `train` only.
+- **Honest accuracy**: tested on two real held-out rack photos never used in training —
+  **all 14 tiles localized correctly (zero misses, zero duplicate boxes)**, **12/14 (85.7%)
+  correctly classified** when each detected box is cropped and re-read by `tile_classifier_v1.pt`.
+  Both remaining errors were single-letter confusions (M→N, V→N), each below 0.6 confidence.
+  See `training/detect/README.md` for the full before/after comparison against the first
+  (pre-3rd-venue) checkpoint.
+- **Not yet wired into a full end-to-end run**: `read_rack` exists in the perception layer, but
+  the constraint decoder hasn't yet been re-validated with real (non-empty) racks in place of the
+  `racks=[]` placeholder it always used before this checkpoint existed.
+
+### Loading it
+
+```python
+from training.detect.visualize_rack_detections import load_model
+
+detector = load_model("models/rack_detector_v1.pth")
+```
+
+Pass `detector` straight into `autoscorer.perception.board_reader.read_rack(rack_frame, detector, classifier)`
+along with a loaded `TileClassifierModel` — `read_rack` handles the BGR→RGB conversion and
+per-box classification internally.
