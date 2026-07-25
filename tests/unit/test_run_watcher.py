@@ -1,0 +1,143 @@
+import random
+
+import cv2
+import numpy as np
+import pytest
+import torch
+
+from autoscorer.gamelogic.board import BOARD_SIZE, CENTER, PREMIUM_SQUARES
+from autoscorer.gamelogic.models import MoveType
+from autoscorer.gamelogic.publish import PublishMode
+from autoscorer.perception.calibration.homography import CANONICAL_SIZE, cell_bounds
+from autoscorer.perception.calibration.venue_profile import VenueProfile, save_venue_profile
+from autoscorer.perception.capture.run_watcher import format_event, run_watcher_on_video
+from training.classify.infer import TileClassifierModel
+from training.classify.train import run_training, save_checkpoint
+from training.synth_render.tile_renderer import SQUARE_COLORS, augment_tile, render_tile
+
+cv2_module = pytest.importorskip("cv2")
+
+# Corners chosen so calibrate_from_corners produces an (approximately)
+# identity mapping for a video already shot at canonical resolution --
+# avoids conflating "does rectification work" (covered by
+# test_calibration.py) with "does the runner wire things together".
+IDENTITY_CORNERS = ((0.0, 0.0), (CANONICAL_SIZE, 0.0), (CANONICAL_SIZE, CANONICAL_SIZE), (0.0, CANONICAL_SIZE))
+
+
+def _blank_board_image() -> np.ndarray:
+    img = np.zeros((CANONICAL_SIZE, CANONICAL_SIZE, 3), dtype=np.uint8)
+    for row in range(BOARD_SIZE):
+        for col in range(BOARD_SIZE):
+            code = PREMIUM_SQUARES.get((row, col), "plain")
+            color = SQUARE_COLORS[code]
+            x1, y1, x2, y2 = cell_bounds(row, col)
+            img[y1:y2, x1:x2] = color[::-1]
+    return img
+
+
+def _place_tile(board_img: np.ndarray, row: int, col: int, letter, rng: random.Random) -> None:
+    tile = augment_tile(render_tile(letter, rng=rng), rng=rng)
+    tile_arr = np.array(tile)[:, :, ::-1]
+    x1, y1, x2, y2 = cell_bounds(row, col)
+    board_img[y1:y2, x1:x2] = tile_arr
+
+
+def _train_tiny_classifier(tmp_path, labels=("A", "N", "T", "BLANK")):
+    rng = random.Random(0)
+    for label in labels:
+        letter = None if label == "BLANK" else label
+        class_dir = tmp_path / label
+        class_dir.mkdir(parents=True, exist_ok=True)
+        base = render_tile(letter, rng=rng)
+        for i in range(30):
+            augment_tile(base, rng=rng).save(class_dir / f"{i:03d}.png")
+
+    model, result = run_training(tmp_path, epochs=25, batch_size=8, device=torch.device("cpu"), seed=1)
+    checkpoint_path = tmp_path / "model.pt"
+    save_checkpoint(model, result.classes, checkpoint_path)
+    return checkpoint_path
+
+
+def _write_video(path, frames, fps=10.0) -> None:
+    size = (frames[0].shape[1], frames[0].shape[0])
+    # Lossless-ish codec: mp4v distorts small glyph details enough to risk
+    # misclassifying a 60x60 synthetic tile crop after compression; FFV1
+    # keeps this a fair test of the *wiring*, not of compression robustness
+    # (a separate, already-covered concern -- see the real-footage work in
+    # game_watcher.py's docstring).
+    fourcc = cv2.VideoWriter_fourcc(*"FFV1")
+    writer = cv2.VideoWriter(str(path), fourcc, fps, size)
+    for frame in frames:
+        writer.write(frame)
+    writer.release()
+
+
+def test_format_event_returns_none_for_no_op_events():
+    from autoscorer.gamelogic.movedetect.game_watcher import WatcherEvent, WatcherState
+    event = WatcherEvent(state=WatcherState.BOARD_SETTLED)
+    assert format_event(event, "p1") is None
+
+
+def test_run_watcher_on_video_detects_a_play_and_alternates_players(tmp_path):
+    checkpoint_path = _train_tiny_classifier(tmp_path)
+
+    reference = _blank_board_image()
+    rng = random.Random(7)
+
+    still_frame_count = 3
+    frames = [reference.copy() for _ in range(still_frame_count)]  # settle on empty board
+
+    placed = reference.copy()
+    _place_tile(placed, *CENTER, "A", rng)
+    frames.append(reference.copy())  # a motion stand-in frame (differs from both settled states)
+    frames.append(np.zeros_like(reference))
+    frames += [placed.copy() for _ in range(still_frame_count)]  # settle on the new placement
+
+    video_path = tmp_path / "test_game.mkv"
+    _write_video(video_path, frames)
+
+    reference_path = tmp_path / "reference.png"
+    cv2.imwrite(str(reference_path), reference)
+    profile = VenueProfile(
+        name="test_venue", corners=IDENTITY_CORNERS, still_frame_count=still_frame_count,
+        reference_board_path=str(reference_path),
+    )
+    save_venue_profile(profile, directory=tmp_path)
+
+    # run_watcher_on_video loads the profile by name via the default venues
+    # directory -- point it at our tmp_path by monkeypatching the module's
+    # lookup instead of relying on a directory argument it doesn't expose.
+    import autoscorer.perception.capture.run_watcher as run_watcher_module
+    original_loader = run_watcher_module.load_venue_profile
+    run_watcher_module.load_venue_profile = lambda name: original_loader(name, directory=tmp_path)
+    try:
+        events = run_watcher_on_video(
+            video_path, "test_venue", checkpoint_path, "Alice", "Bob",
+            sample_fps=None, mode=PublishMode.AUTONOMOUS,
+        )
+    finally:
+        run_watcher_module.load_venue_profile = original_loader
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.scored_move.candidate.move_type == MoveType.PLAY
+    assert event.scored_move.candidate.new_cells == (CENTER,)
+    assert not event.needs_operator
+
+
+def test_format_event_includes_score_and_status_for_a_play():
+    from autoscorer.gamelogic.models import MoveCandidate, ScoredMove
+    from autoscorer.gamelogic.movedetect.game_watcher import WatcherEvent, WatcherState
+    from autoscorer.gamelogic.scoring.rules_engine import MoveScore, WordScore
+
+    candidate = MoveCandidate(turn_number=1, player_id="Alice", move_type=MoveType.PLAY, new_cells=(CENTER,))
+    move_score = MoveScore(words=[WordScore(cells=[CENTER], text="A", score=2)], is_bingo=False, total=2)
+    event = WatcherEvent(
+        state=WatcherState.APPLIED,
+        scored_move=ScoredMove(candidate=candidate, move_score=move_score),
+        confidence=0.95,
+    )
+    line = format_event(event, "Alice")
+    assert "Alice" in line
+    assert "score=2" in line
+    assert "AUTO-PUBLISHED" in line

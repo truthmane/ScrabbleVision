@@ -14,10 +14,30 @@ An ML-powered auto-annotator for livestreamed Scrabble games
   and a stillness/occlusion gate.
 - **The state machine that sequences them into a system**
   (`autoscorer/gamelogic/movedetect/game_watcher.py`): built and tested
-  against synthetic multi-turn frame sequences. `autoscorer/perception/capture/`
-  reads frames from a video file; `configs/venues/` persists per-venue
-  camera calibration between sessions.
-- **Not yet done**: running any of the above against real continuous
-  video (every real-photo validation so far has been single-frame);
-  cross-camera synchronization between a board camera and rack camera(s).
-  See `game_watcher.py`'s module docstring for the exact scope line.
+  against synthetic multi-turn frame sequences, **and now run against real
+  continuous broadcast footage** via
+  `python -m autoscorer.perception.capture.run_watcher` --
+  `autoscorer/perception/capture/` reads frames from a video file;
+  `configs/venues/` persists per-venue camera calibration (corners,
+  motion/occupancy thresholds, an empty-board reference photo) between
+  sessions instead of losing it at the end of every chat.
+- **Real-footage result**: ran the full pipeline (capture -> stillness
+  gate -> temporal-voted classification -> constraint decoding ->
+  validation -> scoring -> publish gateway) against ~2 minutes of a real
+  WESPA Word Wars broadcast, both mid-game and from an actual game start.
+  **Zero wrong moves ever auto-published** across both runs, even while
+  chasing down two real, since-fixed/since-documented perception bugs
+  along the way (occupancy thresholds tuned for a different venue's
+  graphics; a sponsor-logo overlay on the center square that intermittently
+  reads as a false placement pre-game -- see
+  `configs/venues/wespa_word_wars.json`'s notes for the one still open).
+  The confidence-gated safety net is doing exactly the job it was designed
+  for, even with real, unresolved perception quirks in the loop.
+- **Not yet done**: this hasn't run against a *complete* real game
+  end-to-end (only short clips so far); cross-camera synchronization
+  between a board camera and rack camera(s); the center-square logo issue
+  above; batching classifier calls for real per-frame speed (currently
+  ~5s/settled-frame on CPU, dominated by repeated single-image inference
+  on the still-occasionally-spurious occupied cells). See
+  `game_watcher.py`'s and `run_watcher.py`'s module docstrings for the
+  exact scope lines.
