@@ -119,6 +119,59 @@ def _add_realistic_texture_noise(cell_bgr: np.ndarray, rng: random.Random) -> np
     return cv2.cvtColor(compressed, cv2.COLOR_RGB2BGR)
 
 
+def test_detect_occupancy_accepts_a_single_reference_unchanged():
+    # Backward-compat pin: passing one ndarray (not a list) must behave
+    # exactly as it always did.
+    reference = _blank_board_image()
+    current = reference.copy()
+    _place_tile(current, 7, 7, "A")
+
+    occupancy = detect_occupancy(current, reference)
+    assert occupancy[(7, 7)] is True
+    assert occupancy[(0, 0)] is False
+
+
+def test_detect_occupancy_with_multiple_references_treats_either_as_valid_empty():
+    # Stands in for a venue where "empty" genuinely has more than one
+    # appearance (see the module docstring): a cell matching EITHER
+    # reference on `diff` should read as empty, not just the first one.
+    # Uses a plain, untextured color swap (not a letter glyph) for the
+    # alternate state -- `gradient` is computed from the current crop
+    # alone and would fire on real glyph texture regardless of which
+    # reference matches on `diff`, which would defeat the point of this
+    # test (see occupancy/detector.py's module docstring: this exact
+    # texture-independent-of-reference behavior is why the real WESPA fix
+    # needed a raised gradient_threshold too, not multi-reference alone).
+    reference_a = _blank_board_image()
+    reference_b = reference_a.copy()
+    x1, y1, x2, y2 = cell_bounds(7, 7)
+    reference_b[y1:y2, x1:x2] = (40, 40, 40)  # reference_b's own "empty" state: a plain dark patch at (7,7)
+
+    current = reference_a.copy()
+    current[y1:y2, x1:x2] = (40, 40, 40)  # matches reference_b's plain patch exactly, not reference_a
+
+    occupancy_single = detect_occupancy(current, reference_a)
+    assert occupancy_single[(7, 7)] is True, "against only reference_a, this looks occupied"
+
+    occupancy_multi = detect_occupancy(current, [reference_a, reference_b])
+    assert occupancy_multi[(7, 7)] is False, "matching reference_b should count as a valid empty state"
+
+    # A real tile placed somewhere neither reference has anything must
+    # still be correctly detected -- multi-reference must not go blind.
+    assert occupancy_multi[(4, 4)] is False
+    current_with_real_tile = current.copy()
+    _place_tile(current_with_real_tile, 4, 4, "A")
+    occupancy_with_tile = detect_occupancy(current_with_real_tile, [reference_a, reference_b])
+    assert occupancy_with_tile[(4, 4)] is True
+
+
+def test_detect_occupancy_rejects_an_empty_reference_list():
+    import pytest
+    reference = _blank_board_image()
+    with pytest.raises(ValueError):
+        detect_occupancy(reference, [])
+
+
 def test_realistic_background_texture_does_not_trigger_false_occupancy():
     reference = _blank_board_image()
     rng = random.Random(0)

@@ -26,13 +26,28 @@ An ML-powered auto-annotator for livestreamed Scrabble games
   validation -> scoring -> publish gateway) against ~2 minutes of a real
   WESPA Word Wars broadcast, both mid-game and from an actual game start.
   **Zero wrong moves ever auto-published** across both runs, even while
-  chasing down two real, since-fixed/since-documented perception bugs
-  along the way (occupancy thresholds tuned for a different venue's
-  graphics; a sponsor-logo overlay on the center square that intermittently
-  reads as a false placement pre-game -- see
-  `configs/venues/wespa_word_wars.json`'s notes for the one still open).
-  The confidence-gated safety net is doing exactly the job it was designed
-  for, even with real, unresolved perception quirks in the loop.
+  chasing down two real perception bugs along the way -- both now fixed:
+  occupancy thresholds tuned for a different venue's graphics, and a
+  sponsor-logo overlay on the center square that produced 61/61 false
+  placement detections on the game-start clip. Root cause: the
+  `gradient` occupancy signal is computed from the current cell crop
+  alone (`cv2.Sobel`, no reference comparison), so a busy static graphic
+  scores high purely from its own texture, indistinguishable from a real
+  tile -- no reference-matching trick can fix a signal that never looks
+  at the reference. Fixed by raising `occupancy_gradient_threshold` for
+  this venue (relying on `diff`, which does compare to reference, and
+  cleanly separates logo from tile) plus correcting the reference photo.
+  Re-ran the exact clip that produced 61 false detections: **0/0** after
+  the fix, with a small accepted trade-off on a separate mid-game clip
+  (spurious cells 12->15, missed stayed 0). Full details in
+  `configs/venues/wespa_word_wars.json`'s notes. Also added, and tested,
+  multi-reference occupancy support (`detect_occupancy` can now check a
+  cell against several empty-board photos, for a venue whose empty state
+  genuinely has more than one appearance) -- not needed for the WESPA fix
+  itself, but real, reusable infrastructure for the next venue that does.
+  The confidence-gated safety net did exactly the job it was designed
+  for throughout -- even while these bugs were live, nothing wrong ever
+  reached the stream.
 - **Wired into the actual product, not just a script.** `GameWatcher` now
   has a delegated mode (`session=`): every detected move flows through
   `GameSession.submit_move`, the exact call path a human operator's
@@ -49,10 +64,8 @@ An ML-powered auto-annotator for livestreamed Scrabble games
   and "a product you can point a browser at."
 - **Not yet done**: this hasn't run against a *complete* real game
   end-to-end (only short clips so far); cross-camera synchronization
-  between a board camera and rack camera(s); the center-square logo issue
-  above (the very issue that produced those 61 pending moves in one
-  short clip -- next up); batching classifier calls for real per-frame
-  speed (currently ~5s/settled-frame on CPU, dominated by repeated
-  single-image inference on the still-occasionally-spurious occupied
-  cells). See `game_watcher.py`'s and `run_watcher.py`'s module
-  docstrings for the exact scope lines.
+  between a board camera and rack camera(s); batching classifier calls
+  for real per-frame speed (currently ~5s/settled-frame on CPU, dominated
+  by repeated single-image inference on occupied cells). See
+  `game_watcher.py`'s and `run_watcher.py`'s module docstrings for the
+  exact scope lines.

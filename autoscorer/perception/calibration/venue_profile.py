@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -50,6 +50,19 @@ class VenueProfile:
     photo (already rectified) **stored locally, never committed to the
     repo** -- same copyright policy as every other real broadcast photo
     this project has touched. `load_reference_board()` reads it back.
+
+    `additional_reference_board_paths` covers a real wrinkle a single
+    reference photo can't: some venues have more than one genuinely valid
+    *empty* appearance -- WESPA's center square sometimes shows a sponsor
+    logo overlay and sometimes the plain premium-square color underneath,
+    neither of which means a tile is there, but a single fixed reference
+    only ever captures one state and reads the other as spuriously
+    occupied (see `occupancy/detector.py`'s module docstring for exactly
+    how this was found -- 61 false detections on that one cell across one
+    real clip). Add every other genuinely-empty state you've observed
+    here; `load_reference_board()` returns all of them together and
+    occupancy detection only counts a cell as occupied if it differs from
+    *every* one, not just the first.
     """
     name: str
     corners: Tuple[Corner, Corner, Corner, Corner]
@@ -58,25 +71,35 @@ class VenueProfile:
     occupancy_diff_threshold: float = DEFAULT_DIFF_THRESHOLD
     occupancy_gradient_threshold: float = DEFAULT_GRADIENT_THRESHOLD
     reference_board_path: Optional[str] = None
+    additional_reference_board_paths: Tuple[str, ...] = field(default_factory=tuple)
     notes: str = field(default="")
 
     def calibration(self) -> BoardCalibration:
         return calibrate_from_corners(self.corners)
 
-    def load_reference_board(self) -> np.ndarray:
-        """Reads the real, rectified empty-board reference photo this
-        profile points at. Raises if `reference_board_path` isn't set or
-        the file isn't present locally (it's never committed -- see the
-        class docstring)."""
+    def load_reference_board(self) -> Union[np.ndarray, List[np.ndarray]]:
+        """Reads the real, rectified empty-board reference photo(s) this
+        profile points at -- a single image if `additional_reference_board_paths`
+        is empty (the common case), or a list of every reference together
+        if there are more (see the class docstring for why a venue would
+        have more than one). Raises if `reference_board_path` isn't set or
+        any referenced file isn't present locally (none are committed --
+        see the class docstring)."""
         import cv2
 
         if self.reference_board_path is None:
             raise ValueError(f"venue {self.name!r} has no reference_board_path set")
-        path = Path(self.reference_board_path)
-        image = cv2.imread(str(path))
-        if image is None:
-            raise FileNotFoundError(f"reference board photo not found at {path}")
-        return image
+
+        paths = [self.reference_board_path, *self.additional_reference_board_paths]
+        images = []
+        for path_str in paths:
+            path = Path(path_str)
+            image = cv2.imread(str(path))
+            if image is None:
+                raise FileNotFoundError(f"reference board photo not found at {path}")
+            images.append(image)
+
+        return images[0] if len(images) == 1 else images
 
     def to_dict(self) -> dict:
         return {
@@ -87,6 +110,7 @@ class VenueProfile:
             "occupancy_diff_threshold": self.occupancy_diff_threshold,
             "occupancy_gradient_threshold": self.occupancy_gradient_threshold,
             "reference_board_path": self.reference_board_path,
+            "additional_reference_board_paths": list(self.additional_reference_board_paths),
             "notes": self.notes,
         }
 
@@ -103,6 +127,7 @@ class VenueProfile:
             occupancy_diff_threshold=data.get("occupancy_diff_threshold", DEFAULT_DIFF_THRESHOLD),
             occupancy_gradient_threshold=data.get("occupancy_gradient_threshold", DEFAULT_GRADIENT_THRESHOLD),
             reference_board_path=data.get("reference_board_path"),
+            additional_reference_board_paths=tuple(data.get("additional_reference_board_paths", [])),
             notes=data.get("notes", ""),
         )
 

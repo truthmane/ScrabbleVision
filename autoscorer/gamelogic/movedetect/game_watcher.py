@@ -75,7 +75,7 @@ from autoscorer.gamelogic.publish import PendingMove, PublishGateway
 from autoscorer.gamelogic.scoring.rules_engine import score_move
 from autoscorer.perception.board_reader import read_new_cells_voted, read_rack, rack_observations_to_tiles
 from autoscorer.perception.calibration.homography import BoardCalibration
-from autoscorer.perception.occupancy.detector import DEFAULT_DIFF_THRESHOLD, DEFAULT_GRADIENT_THRESHOLD
+from autoscorer.perception.occupancy.detector import DEFAULT_DIFF_THRESHOLD, DEFAULT_GRADIENT_THRESHOLD, ReferenceBoard
 from autoscorer.perception.stillness.detector import (
     DEFAULT_MOTION_THRESHOLD,
     DEFAULT_STILL_FRAME_COUNT,
@@ -136,7 +136,7 @@ class GameWatcher:
     def __init__(
         self,
         calibration: BoardCalibration,
-        reference_board: np.ndarray,
+        reference_board: ReferenceBoard,
         classifier: TileClassifierModel,
         publish_gateway: Optional[PublishGateway] = None,
         session: Optional[GameSession] = None,

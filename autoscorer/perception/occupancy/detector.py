@@ -4,16 +4,39 @@ near-uniform patch of the known board color, while an occupied cell has a
 printed letter/edges, so simple pixel-difference-from-reference and local
 gradient strength are enough, and are far more debuggable than a CNN for
 this sub-problem (per the architecture plan).
+
+Real broadcast footage found a wrinkle a single static reference can't
+capture: a venue's board can have more than one genuinely valid *empty*
+appearance -- WESPA Word Wars' center square sometimes shows a plain
+premium-square color and sometimes a sponsor-logo graphic overlay,
+neither of which means a tile is there, but a single fixed reference photo
+only ever captures one of those states and reads the other as spuriously
+"occupied" (see `configs/venues/wespa_word_wars.json`'s notes for exactly
+how this was found: 61 false detections on that one cell across one real
+clip). `reference_board` therefore accepts either one image or a sequence
+of them -- a cell only counts as occupied if it looks different from
+*every* known-valid empty state, not just one.
 """
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, List, Sequence, Union
 
 import cv2
 import numpy as np
 
 from autoscorer.gamelogic.board import BOARD_SIZE, Coord
 from autoscorer.perception.calibration.homography import crop_cell
+
+ReferenceBoard = Union[np.ndarray, Sequence[np.ndarray]]
+
+
+def _as_reference_list(reference_board: ReferenceBoard) -> List[np.ndarray]:
+    if isinstance(reference_board, np.ndarray):
+        return [reference_board]
+    references = list(reference_board)
+    if not references:
+        raise ValueError("reference_board must have at least one reference image")
+    return references
 
 DEFAULT_DIFF_THRESHOLD = 25.0
 # Calibrated against clean synthetic renders (near-zero background texture),
@@ -70,19 +93,27 @@ def is_occupied(
 
 def detect_occupancy(
     rectified_board: np.ndarray,
-    reference_board: np.ndarray,
+    reference_board: ReferenceBoard,
     diff_threshold: float = DEFAULT_DIFF_THRESHOLD,
     gradient_threshold: float = DEFAULT_GRADIENT_THRESHOLD,
 ) -> Dict[Coord, bool]:
     """Occupancy for every one of the 225 cells, given the current
-    rectified board image and an empty-board reference captured at
-    calibration time (same camera, same rectification)."""
+    rectified board image and one or more empty-board references captured
+    at calibration time (same camera, same rectification).
+
+    `reference_board` accepts a single image (the common case) or a
+    sequence of them, for a venue where "empty" genuinely has more than
+    one valid appearance (see the module docstring) -- a cell counts as
+    occupied only if it looks different from *every* reference given, not
+    just the first/only one.
+    """
+    references = _as_reference_list(reference_board)
     occupancy: Dict[Coord, bool] = {}
     for row in range(BOARD_SIZE):
         for col in range(BOARD_SIZE):
             current_cell = crop_cell(rectified_board, row, col)
-            reference_cell = crop_cell(reference_board, row, col)
-            occupancy[(row, col)] = is_occupied(
-                current_cell, reference_cell, diff_threshold, gradient_threshold,
+            occupancy[(row, col)] = all(
+                is_occupied(current_cell, crop_cell(reference, row, col), diff_threshold, gradient_threshold)
+                for reference in references
             )
     return occupancy

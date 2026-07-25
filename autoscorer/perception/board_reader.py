@@ -27,7 +27,12 @@ from autoscorer.gamelogic.board import BOARD_SIZE, BoardState, Coord, Tile
 from autoscorer.gamelogic.movedetect.constraint_decoder import CellCandidates
 from autoscorer.gamelogic.movedetect.temporal_vote import temporal_vote
 from autoscorer.perception.calibration.homography import BoardCalibration, crop_cell
-from autoscorer.perception.occupancy.detector import DEFAULT_DIFF_THRESHOLD, DEFAULT_GRADIENT_THRESHOLD, detect_occupancy
+from autoscorer.perception.occupancy.detector import (
+    DEFAULT_DIFF_THRESHOLD,
+    DEFAULT_GRADIENT_THRESHOLD,
+    ReferenceBoard,
+    detect_occupancy,
+)
 from training.classify.infer import TileClassifierModel
 
 
@@ -42,7 +47,7 @@ class CellObservation:
 def read_board(
     raw_frame: np.ndarray,
     calibration: BoardCalibration,
-    reference_board: np.ndarray,
+    reference_board: ReferenceBoard,
     classifier: TileClassifierModel,
     diff_threshold: float = DEFAULT_DIFF_THRESHOLD,
     gradient_threshold: float = DEFAULT_GRADIENT_THRESHOLD,
@@ -83,7 +88,7 @@ def read_board(
 def read_new_cells(
     raw_frame: np.ndarray,
     calibration: BoardCalibration,
-    reference_board: np.ndarray,
+    reference_board: ReferenceBoard,
     classifier: TileClassifierModel,
     board_before: BoardState,
     top_k: int = 3,
@@ -123,7 +128,7 @@ def read_new_cells(
 def read_new_cells_voted(
     raw_frames: Sequence[np.ndarray],
     calibration: BoardCalibration,
-    reference_board: np.ndarray,
+    reference_board: ReferenceBoard,
     classifier: TileClassifierModel,
     board_before: BoardState,
     top_k: int = 3,

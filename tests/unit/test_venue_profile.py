@@ -115,3 +115,37 @@ def test_load_reference_board_reads_the_saved_image(tmp_path):
     )
     loaded = profile.load_reference_board()
     assert loaded.shape == (60, 80, 3)
+
+
+def test_load_reference_board_with_additional_paths_returns_a_list(tmp_path):
+    primary = np.full((60, 80, 3), 100, dtype=np.uint8)
+    secondary = np.full((60, 80, 3), 200, dtype=np.uint8)
+    primary_path = tmp_path / "primary.jpg"
+    secondary_path = tmp_path / "secondary.jpg"
+    cv2.imwrite(str(primary_path), primary)
+    cv2.imwrite(str(secondary_path), secondary)
+
+    profile = VenueProfile(
+        name="test_venue",
+        corners=((10.0, 20.0), (500.0, 15.0), (510.0, 480.0), (5.0, 490.0)),
+        reference_board_path=str(primary_path),
+        additional_reference_board_paths=(str(secondary_path),),
+    )
+    loaded = profile.load_reference_board()
+    assert isinstance(loaded, list)
+    assert len(loaded) == 2
+    assert loaded[0].mean() == 100
+    assert loaded[1].mean() == 200
+
+
+def test_additional_reference_board_paths_round_trips_through_save_and_load(tmp_path):
+    profile = VenueProfile(
+        name="test_venue",
+        corners=((10.0, 20.0), (500.0, 15.0), (510.0, 480.0), (5.0, 490.0)),
+        reference_board_path="primary.jpg",
+        additional_reference_board_paths=("alt1.jpg", "alt2.jpg"),
+    )
+    save_venue_profile(profile, directory=tmp_path)
+    loaded = load_venue_profile("test_venue", directory=tmp_path)
+    assert loaded == profile
+    assert loaded.additional_reference_board_paths == ("alt1.jpg", "alt2.jpg")
