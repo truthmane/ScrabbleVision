@@ -219,9 +219,14 @@ anything but its own unit tests.
 each cell's full class-probability distribution across multiple frames of the same stable board
 state (the M2 lever — "per-tile after temporal voting over ≥5 stable frames"), and
 `board_reader.read_new_cells_voted` wires it into the same per-turn-diffing path `read_new_cells`
-uses. Validated against 5 genuine consecutive frames pulled from the broadcast (not part of any
-training data, ~3 seconds apart during the FOISTED move's board-stable window): single-frame
-classification got 3/7 cells of that move right; voting across all 5 frames got 4/7 — a real,
+uses. Voting is only meaningful once something decides the input frames really do show the same
+moment, so `autoscorer/perception/stillness/detector.py` (the master plan's Phase 5
+"stillness/occlusion gate") was built alongside it: a frame-to-frame diff score, calibrated
+against real footage — genuinely stable board frames scored 0.4-8, a frame where hands entered
+the shot scored 37.8, a clean separation. Validated against 5 genuine consecutive frames pulled
+from the broadcast (not part of any training data, ~3 seconds apart during the FOISTED move's
+board-stable window): single-frame classification got 3/7 cells of that move right; voting across
+all 5 frames got 4/7 — a real,
 modest, measured improvement, not just a theoretical one. Both blanks in that move stayed
 misread even after voting (this checkpoint clearly still struggles specifically with blanks on
 this tile style) — voting fixes transient single-frame noise, it doesn't fix a systematic
