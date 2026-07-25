@@ -15,12 +15,13 @@ from pathlib import Path
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from autoscorer.api.session import GameSession
 from autoscorer.gamelogic.models import MoveProcessingError, ScoredMove
+from autoscorer.gamelogic.notation import export_gcg
 from autoscorer.gamelogic.publish import PublishMode
 from autoscorer.overlay.state import build_overlay_state
 
@@ -287,3 +288,15 @@ async def watch_status_endpoint():
         "events_seen": watch_status.events_seen,
         "error": watch_status.error,
     }
+
+
+@app.get("/export/gcg", response_class=PlainTextResponse)
+async def export_gcg_endpoint():
+    """The current game's move history as GCG text -- the plain-text
+    format tournament streaming graphics already know how to consume, so
+    this is a real integration point, not a new format for this project to
+    get adopted. Covers PLAY/EXCHANGE/PASS lines only; see `notation.py`'s
+    module docstring for why the end-of-game rack bonus/penalty line is
+    deliberately not produced.
+    """
+    return export_gcg(session.game_state)

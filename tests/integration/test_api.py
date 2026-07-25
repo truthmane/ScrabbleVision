@@ -94,6 +94,20 @@ def test_autonomous_mode_publishes_immediately(client):
     assert client.get("/state").json()["scores"]["p1"] == (1 + 1 + 1) * 2
 
 
+def test_export_gcg_endpoint_returns_the_move_history_as_gcg_text(client):
+    client.post("/mode", json={"mode": "AUTONOMOUS"})
+    resp = client.post("/moves", json={"player_id": "p1", "new_tiles": FIRST_MOVE_TILES})
+    assert resp.json()["published"] is True
+
+    resp = client.get("/export/gcg")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/plain")
+
+    lines = resp.text.splitlines()
+    assert lines[0] == "#player1 p1 p1"
+    assert lines[1] == ">p1:  8G ANT +6 6"  # p1's rack is unknown here, so it renders empty
+
+
 def test_overlay_field_page_is_served(client):
     resp = client.get("/overlay/field")
     assert resp.status_code == 200

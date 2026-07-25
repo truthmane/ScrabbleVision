@@ -32,9 +32,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 
-from autoscorer.gamelogic.board import BOARD_SIZE, Coord
+from autoscorer.gamelogic.board import BOARD_SIZE, Coord, Tile
+from autoscorer.gamelogic.models import MoveType
+
+if TYPE_CHECKING:
+    from autoscorer.gamelogic.eventlog.store import GameState
 
 _POSITION_ACROSS = re.compile(r"^(\d{1,2})([A-Oa-o])$")
 _POSITION_DOWN = re.compile(r"^([A-Oa-o])(\d{1,2})$")
@@ -218,3 +222,109 @@ def resolve_new_tiles_gcg(move: GcgMove) -> List[NewTilePlacement]:
         else:
             row += 1
     return placements
+
+
+# --- GCG export ---------------------------------------------------------
+# The reverse direction: turn a live GameState's history into GCG text, the
+# same format streaming graphics tooling already knows how to consume (per
+# the user's own stated motivation -- this isn't a new format invented for
+# this project). Only the lines a real-time feed actually needs are
+# produced: per-move PLAY/EXCHANGE/PASS lines and the `#player` header
+# pragmas. The final end-of-game rack bonus/penalty line (e.g.
+# `>AdamLogan: (EENUV) +16 588` in the WESPA fixtures) is deliberately NOT
+# produced -- this engine has no end-of-game detection to trigger it from,
+# and real examples of that line don't even reduce to one obvious formula
+# (see the fixture above: a plain "value of the opponent's unplayed tiles"
+# computation doesn't reproduce it), so guessing at it risks a silently
+# wrong number rather than an honestly absent line.
+
+
+def rack_to_gcg(rack: Sequence[Tile]) -> str:
+    """An unplayed blank shows as '?' (matching real GCG racks, e.g.
+    "PIOTE??" for a rack holding two blanks); every other tile shows its
+    (always uppercase) letter."""
+    return "".join("?" if tile.letter is None else tile.letter for tile in rack)
+
+
+def format_position(word_cells: Sequence[Coord]) -> str:
+    """Inverse of `parse_position`: digit-first ("8G") reads across, single
+    row; letter-first ("E8") reads down, single column. A one-cell word
+    (only possible as an opening single-letter play) defaults to across,
+    matching standard tournament notation for that case."""
+    row, col = word_cells[0]
+    col_letter = chr(ord("A") + col)
+    is_down = len(word_cells) > 1 and len({c for _, c in word_cells}) == 1
+    return f"{col_letter}{row + 1}" if is_down else f"{row + 1}{col_letter}"
+
+
+def format_word_for_gcg(word_cells: Sequence[Coord], word_text: str, new_cells: Sequence[Coord], blank_cells: Sequence[Coord]) -> str:
+    """One char per cell in `word_cells`: '.' for a pre-existing cell the
+    play hooks through, else the letter newly placed there (lowercase if
+    that cell was played as a blank) -- matches the GCG play-line word
+    grammar `parse_gcg_word` already reads."""
+    new_set = set(new_cells)
+    blank_set = set(blank_cells)
+    chars = []
+    for coord, letter in zip(word_cells, word_text):
+        if coord not in new_set:
+            chars.append(".")
+        else:
+            chars.append(letter.lower() if coord in blank_set else letter)
+    return "".join(chars)
+
+
+def format_gcg_move_line(player_token: str, rack_before: Sequence[Tile], position: str, word: str, turn_score: int, cumulative_score: int) -> str:
+    return f">{player_token}: {rack_to_gcg(rack_before)} {position} {word} +{turn_score} {cumulative_score}"
+
+
+def format_gcg_exchange_line(player_token: str, rack_before: Sequence[Tile], exchanged_tiles: Sequence[Tile], cumulative_score: int) -> str:
+    return f">{player_token}: {rack_to_gcg(rack_before)} -{rack_to_gcg(exchanged_tiles)} +0 {cumulative_score}"
+
+
+def format_gcg_pass_line(player_token: str, rack_before: Sequence[Tile], cumulative_score: int) -> str:
+    return f">{player_token}: {rack_to_gcg(rack_before)} - +0 {cumulative_score}"
+
+
+def export_gcg(game_state: "GameState", player_names: Optional[Dict[str, str]] = None, description: str = "") -> str:
+    """Renders a live `GameState`'s move history as GCG text. `player_names`
+    maps each `player_id` (the token used in every `>player_id: ...` line,
+    same identity `GameSession.submit_move` already takes) to a display
+    name for the `#player` header pragma -- falls back to the id itself
+    when not given, since nothing upstream currently tracks display names
+    separately from ids.
+    """
+    player_names = player_names or {}
+    lines: List[str] = []
+    if description:
+        lines.append(f"#description {description}")
+
+    seen_players: List[str] = []
+    for scored_move in game_state.history:
+        pid = scored_move.candidate.player_id
+        if pid not in seen_players:
+            seen_players.append(pid)
+    for i, pid in enumerate(seen_players, start=1):
+        lines.append(f"#player{i} {pid} {player_names.get(pid, pid)}")
+
+    cumulative: Dict[str, int] = {}
+    for scored_move in game_state.history:
+        candidate = scored_move.candidate
+        pid = candidate.player_id
+        move_type = candidate.move_type
+
+        if move_type == MoveType.PLAY:
+            word_score = scored_move.move_score.words[0]
+            position = format_position(word_score.cells)
+            word = format_word_for_gcg(word_score.cells, word_score.text, candidate.new_cells, candidate.blank_cells)
+            cumulative[pid] = cumulative.get(pid, 0) + scored_move.move_score.total
+            lines.append(format_gcg_move_line(
+                pid, candidate.rack_before, position, word, scored_move.move_score.total, cumulative[pid],
+            ))
+        elif move_type == MoveType.EXCHANGE:
+            lines.append(format_gcg_exchange_line(
+                pid, candidate.rack_before, candidate.exchanged_tiles, cumulative.get(pid, 0),
+            ))
+        else:  # PASS
+            lines.append(format_gcg_pass_line(pid, candidate.rack_before, cumulative.get(pid, 0)))
+
+    return "\n".join(lines) + "\n"

@@ -62,10 +62,25 @@ An ML-powered auto-annotator for livestreamed Scrabble games
   through the same buttons a human operator already uses for manual
   entry. This is the connective tissue between "a validated CV pipeline"
   and "a product you can point a browser at."
+- **GCG export** (`autoscorer/gamelogic/notation.py`'s `export_gcg`, served
+  live at `GET /export/gcg`): renders the running `GameState`'s move
+  history as GCG, the plain-text format tournament streaming graphics
+  already consume -- a real integration point, not a new format invented
+  for this project (the same module already *parsed* official `.gcg`
+  files for WS3's ground-truth replay, so this is the reverse direction of
+  something already validated). Covers PLAY/EXCHANGE/PASS lines with
+  correct rack-before-move, position/direction, blank-as-lowercase-letter
+  rendering, and running cumulative score per player; round-trips through
+  the existing parser in tests. Deliberately does **not** produce the
+  final end-of-game rack bonus/penalty line -- this engine has no
+  end-of-game detection to trigger it, and real examples of that line
+  don't reduce to one obvious formula (see `notation.py`'s module
+  docstring), so it's left honestly absent rather than guessed at.
 - **Not yet done**: this hasn't run against a *complete* real game
-  end-to-end (only short clips so far); cross-camera synchronization
-  between a board camera and rack camera(s); batching classifier calls
-  for real per-frame speed (currently ~5s/settled-frame on CPU, dominated
-  by repeated single-image inference on occupied cells). See
+  end-to-end (only short clips so far, now the next planned validation
+  step); cross-camera synchronization between a board camera and rack
+  camera(s); batching classifier calls for real per-frame speed (currently
+  ~5s/settled-frame on CPU, dominated by repeated single-image inference
+  on occupied cells); the GCG end-of-game bonus/penalty line above. See
   `game_watcher.py`'s and `run_watcher.py`'s module docstrings for the
   exact scope lines.

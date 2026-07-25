@@ -5,12 +5,13 @@ with plain function calls -- the web layer is a thin adapter around this.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Tuple, Union
 
 from autoscorer.gamelogic.board import BoardState, Coord, Tile
 from autoscorer.gamelogic.eventlog.store import GameState
-from autoscorer.gamelogic.models import MoveProcessingError, ScoredMove
+from autoscorer.gamelogic.models import MoveProcessingError, MoveType, ScoredMove
 from autoscorer.gamelogic.movedetect.state_machine import process_turn
 from autoscorer.gamelogic.publish import PendingMove, PublishGateway, PublishMode
 
@@ -69,6 +70,20 @@ class GameSession:
             return SubmissionResult(outcome=result, published=False)
 
         self._next_turn += 1
+
+        # GCG export needs the acting player's rack as it stood before this
+        # move (and, for an exchange, exactly which tiles left it) -- data
+        # only available here, not inside process_turn, which never learns
+        # which rack in racks_before/racks_after belongs to `player_id`.
+        rack_before_player = tuple(game_state.racks.get(player_id, []))
+        exchanged_tiles: Tuple[Tile, ...] = ()
+        if result.candidate.move_type == MoveType.EXCHANGE:
+            rack_after_player = tuple(racks_after_map[player_id])
+            exchanged_tiles = tuple((Counter(rack_before_player) - Counter(rack_after_player)).elements())
+        result = ScoredMove(
+            candidate=replace(result.candidate, rack_before=rack_before_player, exchanged_tiles=exchanged_tiles),
+            move_score=result.move_score,
+        )
 
         if self.gateway.should_auto_publish(confidence):
             self._apply(result, board_after, racks_after_map)

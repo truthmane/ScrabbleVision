@@ -37,11 +37,13 @@ def process_turn(
 
     words = words_formed(board_after, new_cells)
     move_score = score_move(board_after, words, new_cells)
+    blank_cells = tuple(c for c in new_cells if board_after.get(c).is_blank)
 
     candidate = MoveCandidate(
         turn_number=turn_number,
         player_id=player_id,
         move_type=move_type,
         new_cells=tuple(new_cells),
+        blank_cells=blank_cells,
     )
     return ScoredMove(candidate=candidate, move_score=move_score)
