@@ -3,8 +3,8 @@ import random
 import numpy as np
 import torch
 
-from autoscorer.gamelogic.board import BOARD_SIZE, PREMIUM_SQUARES
-from autoscorer.perception.board_reader import partition_observations, read_board, CellObservation
+from autoscorer.gamelogic.board import BOARD_SIZE, PREMIUM_SQUARES, BoardState, Tile
+from autoscorer.perception.board_reader import partition_observations, read_board, read_new_cells, CellObservation
 from autoscorer.perception.calibration.homography import CANONICAL_SIZE, BoardCalibration, cell_bounds
 from training.classify.infer import TileClassifierModel
 from training.classify.train import run_training, save_checkpoint
@@ -90,6 +90,30 @@ def test_read_board_flags_blank_tile_with_no_letter(tmp_path):
     assert obs.coord == (4, 0)
     assert obs.is_blank
     assert obs.letter is None
+
+
+def test_read_new_cells_excludes_cells_already_in_board_before(tmp_path):
+    # Same photo shows three occupied cells, but board_before already
+    # accounts for one of them (a prior turn's tile) -- read_new_cells
+    # should only report the other two as this turn's new tiles, exactly
+    # the per-turn diffing the constraint decoder needs (WS4).
+    classifier = _train_tiny_classifier(tmp_path)
+    reference = _blank_board_image()
+    current = reference.copy()
+    rng = random.Random(7)
+    _place_tile(current, 4, 0, "A", rng)
+    _place_tile(current, 4, 1, "N", rng)
+    _place_tile(current, 4, 2, "T", rng)
+
+    board_before = BoardState({(4, 0): Tile("A")})
+
+    candidates = read_new_cells(current, IDENTITY_CALIBRATION, reference, classifier, board_before, top_k=2)
+
+    coords = {cc.coord for cc in candidates}
+    assert coords == {(4, 1), (4, 2)}
+    for cc in candidates:
+        assert len(cc.candidates) == 2
+        assert all(isinstance(label, str) and isinstance(conf, float) for label, conf in cc.candidates)
 
 
 def test_partition_submits_directly_when_all_confident_and_no_blanks():

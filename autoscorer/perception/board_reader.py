@@ -23,7 +23,8 @@ import cv2
 import numpy as np
 
 from autoscorer.api.session import NewTile
-from autoscorer.gamelogic.board import BOARD_SIZE, Coord
+from autoscorer.gamelogic.board import BOARD_SIZE, BoardState, Coord
+from autoscorer.gamelogic.movedetect.constraint_decoder import CellCandidates
 from autoscorer.perception.calibration.homography import BoardCalibration, crop_cell
 from autoscorer.perception.occupancy.detector import detect_occupancy
 from training.classify.infer import TileClassifierModel
@@ -65,6 +66,41 @@ def read_board(
             letter = None if is_blank else label
             observations.append(CellObservation(coord=(row, col), letter=letter, is_blank=is_blank, confidence=confidence))
     return observations
+
+
+def read_new_cells(
+    raw_frame: np.ndarray,
+    calibration: BoardCalibration,
+    reference_board: np.ndarray,
+    classifier: TileClassifierModel,
+    board_before: BoardState,
+    top_k: int = 3,
+) -> List[CellCandidates]:
+    """Like `read_board`, but scoped to exactly one turn's new tiles (cells
+    occupied in this frame but empty in `board_before`) and returning each
+    cell's top-k classifier candidates rather than just its top-1 -- the
+    shape `constraint_decoder.decode_feasible_reading` needs to fall back
+    to a globally-feasible reading when the top guess isn't one.
+
+    This is the per-turn diffing the constraint decoder was missing (see
+    the WS4 section of docs/classifier-accuracy-plan.md): `read_board`
+    reads the whole board every call, which only makes sense for a
+    one-shot read, not for scoring what changed on a single turn.
+    """
+    rectified = calibration.rectify(raw_frame)
+    occupancy = detect_occupancy(rectified, reference_board)
+
+    results = []
+    for row in range(BOARD_SIZE):
+        for col in range(BOARD_SIZE):
+            coord = (row, col)
+            if not occupancy[coord] or not board_before.is_empty(coord):
+                continue
+            crop = crop_cell(rectified, row, col)
+            crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+            candidates = classifier.predict_topk(crop_rgb, k=top_k)
+            results.append(CellCandidates(coord=coord, candidates=candidates))
+    return results
 
 
 @dataclass(frozen=True)
