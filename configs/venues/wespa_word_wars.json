@@ -1,0 +1,24 @@
+{
+  "name": "wespa_word_wars",
+  "corners": [
+    [
+      589.0,
+      70.0
+    ],
+    [
+      1340.0,
+      76.0
+    ],
+    [
+      1335.0,
+      820.0
+    ],
+    [
+      585.0,
+      825.0
+    ]
+  ],
+  "motion_threshold": 10.0,
+  "still_frame_count": 5,
+  "notes": "WESPA Word Wars (Nigel Richards vs Adam Logan, Albany Marriott NY), YouTube broadcast \"Nigel Richards vs Adam Logan - Wespa Word Wars Games 1-7\". Corners validated against Game 1 move 2 (board showing QAT/HUIA aligned correctly). Noted as slightly off for a later, busier Game 2 frame (top-left corner cut off) -- not yet re-calibrated for that case; re-verify before trusting on a new frame from later in a game."
+}
