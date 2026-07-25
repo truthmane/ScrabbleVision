@@ -7,15 +7,18 @@ import torch
 from autoscorer.gamelogic.board import BOARD_SIZE, PREMIUM_SQUARES, BoardState, Tile
 from autoscorer.perception.board_reader import (
     partition_observations,
+    rack_observations_to_tiles,
     read_board,
     read_new_cells,
     read_new_cells_voted,
+    read_rack,
     CellObservation,
+    RackTileObservation,
 )
 from autoscorer.perception.calibration.homography import CANONICAL_SIZE, BoardCalibration, cell_bounds
 from training.classify.infer import TileClassifierModel
 from training.classify.train import run_training, save_checkpoint
-from training.synth_render.tile_renderer import SQUARE_COLORS, augment_tile, render_tile
+from training.synth_render.tile_renderer import FINAL_SIZE, SQUARE_COLORS, augment_tile, render_tile
 
 IDENTITY_CALIBRATION = BoardCalibration(homography=np.eye(3, dtype=np.float64))
 
@@ -160,6 +163,88 @@ def test_read_new_cells_voted_requires_at_least_one_frame(tmp_path):
     reference = _blank_board_image()
     with pytest.raises(ValueError):
         read_new_cells_voted([], IDENTITY_CALIBRATION, reference, classifier, BoardState())
+
+
+class _FakeRackDetector:
+    """Stands in for a trained RF-DETR checkpoint: returns a fixed set of
+    boxes regardless of input, so `read_rack`'s crop-and-classify wiring
+    can be tested without a real checkpoint or GPU (mirrors how
+    test_visualize_rack_detections.py stubs out `supervision.Detections`
+    rather than loading a real model)."""
+
+    def __init__(self, boxes):
+        self._boxes = boxes
+
+    def predict(self, image, threshold=0.3):
+        sv = pytest.importorskip("supervision", reason="supervision (an rfdetr[train] dependency) not installed")
+        return sv.Detections(
+            xyxy=np.array(self._boxes, dtype=np.float64),
+            confidence=np.full(len(self._boxes), 0.9),
+            class_id=np.zeros(len(self._boxes), dtype=int),
+        )
+
+
+def _rack_image_with_tiles(letters, rng, gap=10):
+    """Builds a rack image with `letters` pasted at known, non-overlapping
+    pixel boxes -- returns (image, boxes) so a test can hand the exact
+    boxes to `_FakeRackDetector` and know precisely what `read_rack` should
+    crop and classify. Tile size is fixed at `tile_renderer.FINAL_SIZE`
+    since `augment_tile` always downsamples to that size regardless of
+    the size passed to `render_tile`."""
+    tile_size = FINAL_SIZE
+    width = len(letters) * (tile_size + gap) + gap
+    height = tile_size + 2 * gap
+    image = np.zeros((height, width, 3), dtype=np.uint8)
+    image[:] = (200, 200, 200)  # neutral rack-colored background
+
+    boxes = []
+    for i, letter in enumerate(letters):
+        tile = augment_tile(render_tile(letter, rng=rng), rng=rng)
+        tile_arr = np.array(tile)[:, :, ::-1]  # RGB -> BGR to match rack_frame's convention
+        x1 = gap + i * (tile_size + gap)
+        y1 = gap
+        x2, y2 = x1 + tile_size, y1 + tile_size
+        image[y1:y2, x1:x2] = tile_arr
+        boxes.append((x1, y1, x2, y2))
+    return image, boxes
+
+
+def test_read_rack_crops_detected_boxes_and_classifies_them(tmp_path):
+    pytest.importorskip("supervision", reason="supervision (an rfdetr[train] dependency) not installed")
+    classifier = _train_tiny_classifier(tmp_path)
+    rng = random.Random(5)
+    rack_image, boxes = _rack_image_with_tiles(["A", "N", "T"], rng)
+    detector = _FakeRackDetector(boxes)
+
+    observations = read_rack(rack_image, detector, classifier)
+
+    assert len(observations) == 3
+    assert [obs.letter for obs in observations] == ["A", "N", "T"]
+    assert all(not obs.is_blank for obs in observations)
+    assert [obs.box for obs in observations] == boxes
+
+
+def test_read_rack_flags_blank_tile_with_no_letter(tmp_path):
+    pytest.importorskip("supervision", reason="supervision (an rfdetr[train] dependency) not installed")
+    classifier = _train_tiny_classifier(tmp_path)
+    rng = random.Random(5)
+    rack_image, boxes = _rack_image_with_tiles([None], rng)
+    detector = _FakeRackDetector(boxes)
+
+    observations = read_rack(rack_image, detector, classifier)
+
+    assert len(observations) == 1
+    assert observations[0].is_blank
+    assert observations[0].letter is None
+
+
+def test_rack_observations_to_tiles_preserves_blank_flag_without_a_letter():
+    observations = [
+        RackTileObservation(letter="A", is_blank=False, confidence=0.95, box=(0, 0, 10, 10)),
+        RackTileObservation(letter=None, is_blank=True, confidence=0.7, box=(10, 0, 20, 10)),
+    ]
+    tiles = rack_observations_to_tiles(observations)
+    assert tiles == [Tile("A"), Tile(None, is_blank=True)]
 
 
 def test_partition_submits_directly_when_all_confident_and_no_blanks():

@@ -124,15 +124,95 @@ worked there -- more real photos from *different* games/venues/cameras,
 not just more frames of the same one -- rather than more epochs on this
 same 45-box set. Do this before trusting the checkpoint for anything.
 
+## Second result: 3rd venue added, trained on RunPod GPU (RF-DETR-nano, 50 epochs, RTX 4090, 2026-07-25)
+
+Directly tested the venue-diversity hypothesis the first result called
+for. Harvested real rack photos from a **third, visually distinct venue**
+(WESPA Word Wars, Albany Marriott NY -- white tiles/red text, vs. both
+NASPA venues' black tiles/white text) across all 7 games of a
+Nigel Richards vs. Adam Logan match, always cross-verifying the displayed
+rack against that game's own `.gcg` rack field before trusting a frame
+(same discipline WS3 used for the board classifier) -- this caught and
+correctly skipped several partial/mid-draw racks (fewer tiles visible
+than the GCG record, meaning some tiles were still in the player's hand).
+Real box count grew **80 -> 136** (45 from the original NASPA broadcast +
+91 from WESPA across 2 games' worth of prior harvest plus 5 more games
+this pass).
+
+One technique correction made mid-harvest: physical Scrabble tiles are
+uniformly sized regardless of glyph width (a narrow "I" and a wide "M"
+occupy the same physical tile footprint) -- so accurate boxes come from
+precise **outer-group-bound identification plus equal division**
+(exactly what `reconstruct_boxes_from_groups` already does), not manual
+per-glyph boundary matching. Verified side-by-side on the same rack that
+equal division with correct outer bounds fits every tile tighter than
+eyeballing each glyph's width.
+
+Training moved to a RunPod RTX 4090 pod for this pass (the local MPS
+~95-minute run was fine for a first checkpoint, but iterating further on
+that hardware wasn't worth it once a real GPU was available). Getting
+`rfdetr[train]` working there required a real fix: the pod's stock
+torch 2.4.1 + transformers 5.14.1 combo failed to import (`transformers`
+expected `torch.distributed.tensor.DTensor`, absent in 2.4.1); upgrading
+torch to 2.6.0+cu124 then broke on a stale torchaudio 2.4.1 build
+(undefined symbol at import) -- fixed by uninstalling torchaudio entirely
+(unused here; only pulled in transitively by one optional transformers
+loss function). Once fixed, epoch 1 (including CUDA warm-up) took under
+3 minutes and every epoch after ran in ~90 seconds -- the full 50-epoch
+run finished in about an hour, versus ~95 minutes for 10 epochs on MPS.
+
+**Ran the exact same two held-out tests, on checkpoints from different
+training runs, for an honest apples-to-apples comparison:**
+
+- **NASPA "XETSREM"** (same photo the first result was tested against):
+  previously 3/7 tiles clean (E/T/S correct; X misclassified as K; R
+  produced a duplicate/spurious extra box; M missed entirely). This
+  checkpoint: **all 7 tiles localized with a single tight box each (zero
+  misses, zero duplicates)**, and 6/7 labels correct (X, E, T, S, R, E
+  all correct; only M was misclassified, as N).
+- **WESPA "SPRAEVG"** (a fresh rack, never used in training, from the
+  venue just added): **all 7 tiles localized cleanly**, 6/7 labels
+  correct (S, P, R, A, E, G all correct; only V was misclassified, as N).
+
+**12/14 real tile labels correct across both photos (was roughly half
+before), and zero localization failures on either photo (was 2 real
+localization failures -- one miss, one duplicate -- last time).** This is
+the same venue-diversity result WS3 already proved for the tile
+classifier, now confirmed for rack detection too: the *localization* task
+(finding where each tile is) generalized essentially perfectly even from
+the first checkpoint's synthetic-heavy training; it was specifically
+*classification* generalization (reading which letter) that needed real
+cross-venue diversity, and adding one genuinely different venue fixed
+most of it in one pass.
+
+Both remaining errors (M->N, V->N) share a pattern worth noting for
+future work: both are single-letter misclassifications, not localization
+failures, and the confidence-fallback gateway (`AUTONOMOUS_WITH_CONFIDENCE_FALLBACK`)
+would still catch them if wired in with a reasonable threshold, since
+both fell below 0.6 confidence. Not yet tested: whether a 4th venue
+would close this remaining gap the way the 2nd/3rd venue did for the
+classifier, or whether rack detection saturates with less diversity than
+board classification needed.
+
+This checkpoint (`checkpoint_best_total.pth`, ~115MB) is **not committed
+to the repo** -- it exceeds GitHub's 100MB per-file limit without Git LFS,
+which this repo doesn't have configured (a real setup decision, not made
+unilaterally here). It lives only in the training scratchpad and on the
+RunPod pod it trained on; retrain from the documented recipe above to
+reproduce it, or set up Git LFS first if committing model weights this
+size becomes a recurring need.
+
 ## What's real vs. synthetic right now
 
 - **Synthetic**: unlimited, generated fresh every run, used for
   train/valid/test.
-- **Real**: 8 rack photos harvested from the 2026 NASPA broadcast (see
-  `docs/classifier-accuracy-plan.md`'s WS3 section) -- 45 tiles total,
-  folded into `train` only. The raw photos themselves aren't committed
-  to the repo (copyrighted broadcast footage, same policy as the rest of
-  this project's real-tile data); only the reconstruction code is.
+- **Real**: 136 real tile boxes across 21 rack/board photos from 3
+  distinct venues/productions (2026 NASPA broadcast, "Let's Play
+  Scrabble"/CSW production, WESPA Word Wars) -- folded into `train` only.
+  The raw photos themselves aren't committed to the repo (copyrighted
+  broadcast footage, same policy as the rest of this project's real-tile
+  data); only the reconstruction code and combined-entries pickle
+  structure are documented here.
 
 ## Next steps once a trained model exists
 
@@ -140,13 +220,17 @@ same 45-box set. Do this before trusting the checkpoint for anything.
   as a rack-reading counterpart to `read_new_cells`/`read_new_cells_voted` --
   crop each detected box, run it through the existing `TileClassifierModel`
   (no retraining needed there; the detector only needs to *localize* tiles,
-  the classifier already knows how to *read* them).
+  the classifier already knows how to *read* them). **This is now a
+  reasonable next step** -- localization is essentially solved and
+  classification is honestly measured at 12/14 (85.7%) on real held-out
+  photos, well above chance and consistent with the confidence-gated
+  operator-review safety net the rest of this project already relies on.
 - Feed real rack contents into `autoscorer/gamelogic/movedetect/constraint_decoder.py`'s
   `decode_feasible_reading` (currently called with `racks=[]` everywhere
   since no rack camera/detector existed yet) -- this tightens the
   pool-feasibility budget and should make constraint decoding meaningfully
   more accurate.
-- Validate against fresh real rack photos (not the 8 already spent on
-  training) the same way WS3 validated the classifier -- harvest new
-  frames, run the detector, compare against the known rack contents from
-  a `.gcg` replay.
+- Validate against more fresh real rack photos as they're harvested, the
+  same way WS3 validated the classifier -- and consider a 4th venue if
+  the M/N- and V/N-style single-letter confusions persist once more data
+  is available.

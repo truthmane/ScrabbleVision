@@ -7,10 +7,10 @@ from training.collect.replay_game import read_gcg_moves, replay_gcg_game
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 FIXTURE = FIXTURES_DIR / "spc2026_final_game1.gcg"
 
-# Six real games from the 2026 NASPA Scrabble Players Championship
-# (event.scrabbleplayers.org), spanning different player pairs and rounds
-# -- including the eventual champion's own finals games, exchanges, and
-# multiple bingos -- so this isn't just one lucky game replaying cleanly.
+# Thirteen real games spanning different player pairs, rounds, tournaments,
+# and even sanctioning bodies (NASPA/NWL and WESPA/CSW) -- including the
+# eventual NASPA champion's own finals games, exchanges, and multiple
+# bingos -- so this isn't just one lucky game replaying cleanly.
 ALL_FIXTURES = [
     FIXTURES_DIR / "spc2026_final_game1.gcg",
     FIXTURES_DIR / "spc2026_game8.gcg",
@@ -18,6 +18,13 @@ ALL_FIXTURES = [
     FIXTURES_DIR / "spc2026_final_game3.gcg",
     FIXTURES_DIR / "spc2026_game22.gcg",
     FIXTURES_DIR / "spc2026_game25.gcg",
+    FIXTURES_DIR / "wespa_word_wars_game1.gcg",
+    FIXTURES_DIR / "wespa_word_wars_game2.gcg",
+    FIXTURES_DIR / "wespa_word_wars_game3.gcg",
+    FIXTURES_DIR / "wespa_word_wars_game4.gcg",
+    FIXTURES_DIR / "wespa_word_wars_game5.gcg",
+    FIXTURES_DIR / "wespa_word_wars_game6.gcg",
+    FIXTURES_DIR / "wespa_word_wars_game7.gcg",
 ]
 
 

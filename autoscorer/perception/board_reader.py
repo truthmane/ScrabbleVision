@@ -17,13 +17,13 @@ threshold decision, it's a structural one.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
 
 from autoscorer.api.session import NewTile
-from autoscorer.gamelogic.board import BOARD_SIZE, BoardState, Coord
+from autoscorer.gamelogic.board import BOARD_SIZE, BoardState, Coord, Tile
 from autoscorer.gamelogic.movedetect.constraint_decoder import CellCandidates
 from autoscorer.gamelogic.movedetect.temporal_vote import temporal_vote
 from autoscorer.perception.calibration.homography import BoardCalibration, crop_cell
@@ -147,6 +147,62 @@ def read_new_cells_voted(
             voted = temporal_vote(per_frame_candidates)[:top_k]
             results.append(CellCandidates(coord=coord, candidates=voted))
     return results
+
+
+@dataclass(frozen=True)
+class RackTileObservation:
+    letter: Optional[str]  # None means "detected a blank tile, letter unknown"
+    is_blank: bool
+    confidence: float
+    box: Tuple[int, int, int, int]  # x1, y1, x2, y2 in rack_frame's pixel space
+
+
+def read_rack(
+    rack_frame: np.ndarray,
+    rack_detector,
+    classifier: TileClassifierModel,
+    detection_threshold: float = 0.3,
+) -> List[RackTileObservation]:
+    """Reads every tile currently on a rack camera frame: `rack_detector`
+    (an RF-DETR model, e.g. loaded via `training.detect.visualize_rack_detections.load_model`)
+    localizes individual tiles -- real rack tiles aren't evenly spaced like
+    board cells, so there's no fixed grid to crop against -- then each
+    detected box is cropped and handed to the same `TileClassifierModel`
+    used for board cells. The detector only needs to find *where* the
+    tiles are; classification stays the classifier's job, since it's the
+    more mature, better-calibrated component (see training/detect/README.md
+    for the honest held-out accuracy this currently gets: 12/14 real tiles
+    across two held-out photos as of the 3rd-venue retrain).
+
+    `rack_frame` and each crop follow the same BGR (OpenCV) convention as
+    `read_board`/`read_new_cells` -- both the detector and the classifier
+    expect RGB, so both get converted at this boundary, not before.
+    """
+    rgb_frame = cv2.cvtColor(rack_frame, cv2.COLOR_BGR2RGB)
+    detections = rack_detector.predict(rgb_frame, threshold=detection_threshold)
+
+    observations = []
+    for box in detections.xyxy:
+        x1, y1, x2, y2 = (int(v) for v in box)
+        crop_rgb = rgb_frame[y1:y2, x1:x2]
+        label, confidence = classifier.predict(crop_rgb)
+        is_blank = label == "BLANK"
+        letter = None if is_blank else label
+        observations.append(
+            RackTileObservation(letter=letter, is_blank=is_blank, confidence=confidence, box=(x1, y1, x2, y2))
+        )
+    return observations
+
+
+def rack_observations_to_tiles(observations: Sequence[RackTileObservation]) -> List[Tile]:
+    """Converts detected rack tiles into the `Tile` shape
+    `constraint_decoder.decode_feasible_reading`'s `racks` parameter and
+    `bag_engine`'s pool derivation expect. A detected blank's `letter` is
+    left `None` (unplayed blanks never carry a letter -- see `Tile`'s own
+    validation in board.py) -- pool accounting only needs the `is_blank`
+    flag, never which letter a low-confidence guess attached to it.
+    """
+    return [Tile(letter=obs.letter, is_blank=obs.is_blank) for obs in observations]
 
 
 @dataclass(frozen=True)
