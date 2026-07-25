@@ -53,7 +53,17 @@ python -m training.detect.train_rack_detector /tmp/rack_smoke \
 This exists purely to catch integration bugs (malformed boxes, bad
 category IDs, missing files) for free before running on a paid GPU --
 not to produce a usable model. 1 epoch on 8 tiny images will not detect
-anything useful.
+anything useful. Confirmed working this way: 8 images, 1 epoch, CPU,
+ran clean end-to-end in well under a minute.
+
+**`--device mps` on a full-size dataset is not a substitute for a real
+GPU** -- tried it (2008 train images, RF-DETR-nano) and a single epoch
+was still under 100/502 steps after 6 minutes. Apple Silicon's MPS
+backend clearly isn't accelerating this model's operations the way CUDA
+does; don't expect a meaningful checkpoint from an overnight MPS run on
+the full dataset. Use MPS only for the tiny smoke test above (where slow
+is fine because there's almost nothing to do), and do the real run on
+an actual CUDA GPU.
 
 ### Real training run (RunPod or similar)
 
