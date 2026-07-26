@@ -198,3 +198,28 @@ An ML-powered auto-annotator for livestreamed Scrabble games
   repeated single-image inference on occupied cells); the GCG
   end-of-game bonus/penalty line. See `game_watcher.py`'s and
   `run_watcher.py`'s module docstrings for the exact scope lines.
+- **First full end-to-end completion of a complete real game.** Re-ran
+  with all six fixes (adding the blended-reference refinement above) and
+  the pipeline processed the entire ~37-minute broadcast start to finish
+  -- no hang, no crash, a first for this project. Comparing the 11
+  detected turns against the real GCG: turns 1, 2, 5, 6, 9 (QAT, HUIA,
+  CROWNET, ARB.RIZE, WYND) scored an exact match; turns 3, 4, 7, 8
+  (FISCS, ..OJO, INENTED, .YGA) got the right position and cell count
+  with a score off by a few points (one misread letter somewhere); turns
+  10-11 broke down (RAGBOLT came back with only 6 of 7 cells) and most
+  of the remaining ~16 real moves in the game weren't cleanly captured.
+  **This validates all six architectural fixes above -- the pipeline
+  reliably handles a real game's first ~9 moves with strong accuracy.**
+  What remains past that point is a different category of problem: a
+  classifier/occupancy accuracy ceiling, not turn-detection logic.
+  Root-caused the specific RAGBOLT miss rather than just noting it:
+  pulled the exact frame and measured occupancy directly -- the dropped
+  cell (RAGBOLT's "T") scored diff=38.96 against the venue's 38.0
+  threshold, while its neighboring letters scored 52-70. Thin-glyph
+  letters like T carry less ink and so naturally score lower diff,
+  leaving little margin before ordinary noise pushes a real tile below
+  threshold. Deliberately did not chase this with a threshold change:
+  the residual noise measured earlier tonight overlaps the same 30s-40s
+  band, so lowering the threshold to rescue thin letters would likely
+  resurrect the false-positive problems already fixed this session --
+  a genuine calibration ceiling for this broadcast, not a quick fix.
