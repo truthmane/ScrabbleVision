@@ -146,8 +146,17 @@ def read_new_cells_voted(
     Assumes `raw_frames` all show the same board state -- that's what a
     stillness gate upstream (not built here; see the master architecture
     plan's move-detection state machine) is responsible for guaranteeing.
-    Occupancy is decided from the first frame only; a genuinely stable
-    sequence shouldn't disagree on which cells are occupied.
+    A cell only counts as occupied if EVERY frame in the window agrees --
+    found necessary running this against a complete real game: a hand
+    hovering near (not over) the board can be too small a change for the
+    coarse whole-frame stillness gate to reject, yet still nudge one
+    frame's diff score for a specific cell across the occupancy
+    threshold. Checking only the first frame (the original approach)
+    treated that one noisy frame as ground truth for the whole window;
+    real board footage showed cells flagged this way disagree across the
+    window's own frames, while a genuine tile reads occupied in all of
+    them, every time -- so requiring unanimous agreement filters out
+    exactly this noise without costing any real detections.
 
     See `read_board`'s docstring on `diff_threshold`/`gradient_threshold` --
     **getting these wrong here is expensive, not just inaccurate**: every
@@ -162,7 +171,14 @@ def read_new_cells_voted(
 
     num_classes = len(classifier.classes)
     rectified_frames = [calibration.rectify(frame) for frame in raw_frames]
-    occupancy = detect_occupancy(rectified_frames[0], reference_board, diff_threshold, gradient_threshold)
+    per_frame_occupancy = [
+        detect_occupancy(rectified, reference_board, diff_threshold, gradient_threshold)
+        for rectified in rectified_frames
+    ]
+    occupancy = {
+        coord: all(occ[coord] for occ in per_frame_occupancy)
+        for coord in per_frame_occupancy[0]
+    }
 
     results = []
     for row in range(BOARD_SIZE):

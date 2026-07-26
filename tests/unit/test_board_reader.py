@@ -192,6 +192,45 @@ def test_read_new_cells_voted_outvotes_a_single_bad_frame(tmp_path):
     assert cc.candidates[0][0] == "A"
 
 
+def test_read_new_cells_voted_requires_unanimous_occupancy_across_the_whole_window(tmp_path):
+    """Regression test for a real bug running this against a complete real
+    game found: a hand hovering near (not over) the board can be too small
+    a change for the stillness gate's coarse whole-frame motion check to
+    reject, yet still nudge one frame's occupancy signal for a specific
+    cell over threshold. Deciding occupancy from a single frame (this
+    function's original behavior) treats that one noisy frame as ground
+    truth for the whole window; real footage showed cells flagged this way
+    never agree across the window's other frames, while a genuine tile
+    reads occupied in every frame, every time -- so requiring unanimous
+    agreement filters out exactly this noise without losing real
+    detections (see board_reader.py's read_new_cells_voted docstring).
+    """
+    classifier = _train_tiny_classifier(tmp_path)
+    reference = _blank_board_image()
+    board_before = BoardState()
+    rng = random.Random(13)
+
+    # A genuine tile at (4, 0), present in every frame of the window.
+    frames = []
+    for _ in range(5):
+        frame = reference.copy()
+        _place_tile(frame, 4, 0, "A", rng)
+        frames.append(frame)
+
+    # Transient occupancy noise at (6, 6) -- a brightness shift, same
+    # pattern as test_read_new_cells_respects_custom_occupancy_thresholds
+    # -- present in only the FIRST frame of the window, absent from the
+    # other four (a brief, real, but not-tile-related disturbance).
+    x1, y1, x2, y2 = cell_bounds(6, 6)
+    shifted = np.clip(frames[0][y1:y2, x1:x2].astype(np.int16) + 60, 0, 255).astype(np.uint8)
+    frames[0][y1:y2, x1:x2] = shifted
+
+    candidates = read_new_cells_voted(frames, IDENTITY_CALIBRATION, reference, classifier, board_before, top_k=2)
+
+    coords = {cc.coord for cc in candidates}
+    assert coords == {(4, 0)}, "noise present in only one window frame must not be treated as a real cell"
+
+
 def test_read_new_cells_voted_requires_at_least_one_frame(tmp_path):
     classifier = _train_tiny_classifier(tmp_path)
     reference = _blank_board_image()

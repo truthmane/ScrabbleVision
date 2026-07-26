@@ -105,10 +105,26 @@ An ML-powered auto-annotator for livestreamed Scrabble games
   keep waiting, while a genuinely finished turn re-confirms itself
   immediately. Covered by a new regression test that reproduces the
   exact partial-placement scenario. 227 tests passing (was 226).
-- **Not yet done**: a second full-game run with this fix hasn't been
-  completed yet (the fix was found and applied mid-run); cross-camera
-  synchronization between a board camera and rack camera(s); batching
-  classifier calls for real per-frame speed (currently ~5s/settled-frame
-  on CPU, dominated by repeated single-image inference on occupied
-  cells); the GCG end-of-game bonus/penalty line. See `game_watcher.py`'s
-  and `run_watcher.py`'s module docstrings for the exact scope lines.
+  Re-ran the full game with the fix: turns 1-8 all matched the real GCG
+  cleanly (HUIA came through as one complete move, both bingos scored
+  exact matches), confirming the fix -- but the run stalled again,
+  revealing a **second, distinct bug**: `read_new_cells_voted` decided
+  occupancy from only the first frame of its temporal-voting window, so a
+  hand hovering near (not over) the board -- too small a disturbance for
+  the coarse whole-frame stillness gate to reject -- could nudge one
+  frame's occupancy signal for a specific cell over threshold, and that
+  one noisy frame got treated as ground truth for the whole window.
+  Confirmed directly against the actual footage: every cell that flagged
+  this way disagreed across the window's own 5 frames, while every
+  genuine tile read occupied in all 5, every time. **Fixed** by requiring
+  unanimous occupancy agreement across the whole window instead of
+  trusting frame zero -- covered by a new regression test that reproduces
+  a single noisy frame inside an otherwise-clean window. 228 tests
+  passing.
+- **Not yet done**: a third full-game run with both fixes hasn't been
+  completed yet; cross-camera synchronization between a board camera and
+  rack camera(s); batching classifier calls for real per-frame speed
+  (currently ~5s/settled-frame on CPU, dominated by repeated
+  single-image inference on occupied cells); the GCG end-of-game
+  bonus/penalty line. See `game_watcher.py`'s and `run_watcher.py`'s
+  module docstrings for the exact scope lines.
