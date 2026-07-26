@@ -4,35 +4,25 @@ import numpy as np
 import pytest
 import torch
 
+import autoscorer.gamelogic.movedetect.game_watcher as gw_module
 from autoscorer.api.session import GameSession
-from autoscorer.gamelogic.board import BOARD_SIZE, CENTER, PREMIUM_SQUARES, BoardState, Tile
+from autoscorer.gamelogic.board import CENTER, BoardState, Tile
 from autoscorer.gamelogic.models import MoveType
 from autoscorer.gamelogic.movedetect.game_watcher import GameWatcher, WatcherState
 from autoscorer.gamelogic.publish import PublishGateway, PublishMode
-from autoscorer.perception.calibration.homography import CANONICAL_SIZE, BoardCalibration, cell_bounds
+from autoscorer.perception.calibration.homography import BoardCalibration, cell_bounds
 from training.classify.infer import TileClassifierModel
 from training.classify.train import run_training, save_checkpoint
-from training.synth_render.tile_renderer import FINAL_SIZE, SQUARE_COLORS, augment_tile, render_tile
+from training.synth_render.tile_renderer import FINAL_SIZE, augment_tile, render_tile
+
+from tests.support.synth_board import blank_board_image as _blank_board_image
+from tests.support.synth_board import place_tile as _place_tile_full
 
 IDENTITY_CALIBRATION = BoardCalibration(homography=np.eye(3, dtype=np.float64))
 
 
-def _blank_board_image() -> np.ndarray:
-    img = np.zeros((CANONICAL_SIZE, CANONICAL_SIZE, 3), dtype=np.uint8)
-    for row in range(BOARD_SIZE):
-        for col in range(BOARD_SIZE):
-            code = PREMIUM_SQUARES.get((row, col), "plain")
-            color = SQUARE_COLORS[code]
-            x1, y1, x2, y2 = cell_bounds(row, col)
-            img[y1:y2, x1:x2] = color[::-1]
-    return img
-
-
 def _place_tile(board_img: np.ndarray, row: int, col: int, letter, rng: random.Random) -> None:
-    tile = augment_tile(render_tile(letter, rng=rng), rng=rng)
-    tile_arr = np.array(tile)[:, :, ::-1]
-    x1, y1, x2, y2 = cell_bounds(row, col)
-    board_img[y1:y2, x1:x2] = tile_arr
+    _place_tile_full(board_img, row, col, letter, rng)
 
 
 def _train_tiny_classifier(tmp_path, labels=("A", "N", "T", "BLANK")):
@@ -363,6 +353,148 @@ def test_new_cells_hooking_through_an_existing_tile_cluster_together(tmp_path):
 
     assert final.state == WatcherState.APPLIED
     assert set(final.scored_move.candidate.new_cells) == {(7, 5), (7, 6), (7, 8), (7, 9)}
+
+
+def test_when_the_largest_candidate_fails_a_smaller_one_from_the_same_cluster_is_tried(tmp_path):
+    """Regression test for the never-jam commit search: a single
+    connected cluster can yield more than one candidate placement (see
+    `placement_search.py`), and a failure on the first one tried must not
+    give up on the whole observation -- the search must fall through to
+    the next candidate in the same call.
+
+    An L-shaped cluster -- (0,0),(0,1),(1,1) -- with an existing tile at
+    (2,1) yields two same-size candidates: the row-0 run {(0,0),(0,1)}
+    and the col-1 run {(0,1),(1,1)}. The row run doesn't connect to
+    anything (fails validation); the col run hooks through the existing
+    tile at (2,1) (succeeds). The row run sorts first in the deterministic
+    tiebreak, so this only passes if the search tries a second candidate
+    after the first one fails.
+    """
+    classifier = _train_tiny_classifier(tmp_path)
+    watcher = _make_watcher(classifier, mode=PublishMode.AUTONOMOUS)
+    rng = random.Random(31)
+
+    watcher._board = BoardState({(2, 1): Tile("A")})
+
+    frame = _blank_board_image()
+    for row, col, letter in [(0, 0, "A"), (0, 1, "N"), (1, 1, "T")]:
+        _place_tile(frame, row, col, letter, rng)
+
+    final = _settle(watcher, frame, "p1")
+
+    assert final.state == WatcherState.APPLIED, f"expected a commit, got {final.reason!r}"
+    assert set(final.scored_move.candidate.new_cells) == {(0, 1), (1, 1)}
+
+
+def test_a_persistently_failing_cluster_never_blocks_an_independent_one(tmp_path):
+    """Regression test for the quarantine mechanism's real value: a cell
+    that keeps failing (here, a genuine blank tile adjacent to a
+    perfectly fine one -- the two always cluster and always get tried
+    together, so they fail and eventually quarantine together too, since
+    a lone blank has no way to resolve without an operator or a lexicon)
+    must never block an entirely UNRELATED, independently valid
+    placement elsewhere on the board from committing. Also confirms the
+    persistently-failing cell does get quarantined rather than retried
+    forever with no bound.
+    """
+    classifier = _train_tiny_classifier(tmp_path)
+    watcher = _make_watcher(classifier, mode=PublishMode.AUTONOMOUS)
+    rng = random.Random(32)
+
+    watcher._board = BoardState({(5, 5): Tile("A"), (10, 10): Tile("A")})
+
+    frame = _blank_board_image()
+    _place_tile(frame, 5, 6, "N", rng)  # adjacent to a real blank -- never cleanly resolves
+    _place_tile(frame, 5, 7, None, rng)  # a real blank tile, structurally unresolvable alone
+    _place_tile(frame, 10, 11, "T", rng)  # entirely independent, cleanly valid placement
+
+    applied = None
+    for _ in range(10):
+        event = watcher.observe_board_frame(frame.copy(), player_id="p1")
+        if event.state == WatcherState.APPLIED:
+            applied = event
+            break
+
+    assert applied is not None, "the independent placement never committed"
+    assert set(applied.scored_move.candidate.new_cells) == {(10, 11)}
+
+    for _ in range(10):
+        event = watcher.observe_board_frame(frame.copy(), player_id="p1")
+        if (5, 7) in watcher._quarantined:
+            break
+
+    assert (5, 7) in watcher._quarantined, "the persistently-failing blank cell was never quarantined"
+
+
+def test_truncated_candidate_never_auto_publishes_even_at_high_confidence(tmp_path):
+    """A candidate smaller than the largest one its cluster could have
+    produced is a truncation -- a real, measured risk (see
+    `placement_search.py`'s docstring) that must always route to an
+    operator, regardless of confidence or publish mode. Tested directly
+    against `_attempt_commit` since constructing an end-to-end scenario
+    where the full cluster genuinely fails is incidental to what this
+    rule actually checks (the size comparison alone).
+    """
+    from autoscorer.gamelogic.movedetect.constraint_decoder import CellCandidates
+    from autoscorer.gamelogic.movedetect.placement_search import CandidatePlacement
+
+    classifier = _train_tiny_classifier(tmp_path)
+    watcher = _make_watcher(classifier, mode=PublishMode.AUTONOMOUS, confidence_threshold=0.5)
+
+    candidate = CandidatePlacement(cells=frozenset({CENTER}), cluster_max_size=3)
+    cell_candidates = [CellCandidates(coord=CENTER, candidates=[("A", 0.97), ("N", 0.02), ("T", 0.01)])]
+
+    outcome = watcher._attempt_commit(candidate, cell_candidates, "p1")
+
+    assert outcome.needs_operator is True
+    assert outcome.confidence > 0.9
+    assert watcher.board.is_blank_board(), "a forced-operator candidate must not apply to the board"
+
+
+def test_watchdog_emits_a_stalled_event_after_repeated_failures(tmp_path, monkeypatch):
+    """After enough consecutive failed observations, a `STALLED` watchdog
+    event fires as a backstop beyond per-cell quarantine alone -- this is
+    what makes a stuck cell visible instead of silently retrying forever
+    with nothing in the caller's output to show for it (exactly the
+    163-observation real jam this whole redesign targets)."""
+    import autoscorer.gamelogic.movedetect.game_watcher as gw_module_local
+    monkeypatch.setattr(gw_module_local, "STALL_OBSERVATIONS", 3)
+
+    classifier = _train_tiny_classifier(tmp_path)
+    watcher = _make_watcher(classifier, mode=PublishMode.AUTONOMOUS)
+    rng = random.Random(33)
+
+    frame = _blank_board_image()
+    _place_tile(frame, *CENTER, None, rng)  # a lone blank -- structurally unresolvable, first move
+
+    event = None
+    for _ in range(8):
+        event = watcher.observe_board_frame(frame.copy(), player_id="p1")
+        if event.is_stall:
+            break
+
+    assert event is not None and event.is_stall is True
+    assert event.state == WatcherState.STALLED
+
+
+def test_a_structurally_valid_but_nonsense_word_still_commits(tmp_path):
+    """No lexicon exists yet to check word validity against, and a phony
+    (an invalid word) is a completely legal Scrabble play if unchallenged
+    -- so this must keep working exactly as-is once one does. "ATN" is
+    not a real word; it must still commit and score like any other
+    geometrically valid placement."""
+    classifier = _train_tiny_classifier(tmp_path)
+    watcher = _make_watcher(classifier, mode=PublishMode.AUTONOMOUS)
+    rng = random.Random(34)
+
+    frame = _blank_board_image()
+    for col, letter in [(6, "A"), (7, "T"), (8, "N")]:
+        _place_tile(frame, 7, col, letter, rng)
+
+    final = _settle(watcher, frame, "p1")
+
+    assert final.state == WatcherState.APPLIED
+    assert set(final.scored_move.candidate.new_cells) == {(7, 6), (7, 7), (7, 8)}
 
 
 def test_two_disconnected_confirmed_clusters_commit_separately_not_merged(tmp_path):

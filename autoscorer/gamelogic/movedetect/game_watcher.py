@@ -20,6 +20,25 @@ being a system rather than a collection of validated parts.
   every state below is genuine, driven by the actual stillness gate,
   temporal voting, constraint decoding, and scoring engine already built
   and tested elsewhere in this repo.
+- **Never-jam commit search.** A confirmed set of new cells can yield
+  more than one legal candidate placement (see
+  `placement_search.enumerate_candidate_placements`) -- every one is
+  tried, ranked by cell count first, until one commits or none do,
+  instead of picking a single cluster and giving up on the whole
+  observation if it fails. A cell that keeps failing across
+  `FAILURE_QUARANTINE_THRESHOLD` observations is quarantined (excluded
+  from consideration) for `QUARANTINE_TTL_OBSERVATIONS` observations,
+  which is what stops a single problematic cell (a persistent false
+  occupancy reading, or a genuinely blank tile this state machine cannot
+  resolve alone) from blocking every other, unrelated placement on the
+  board for the rest of the game -- found running this against a
+  complete real game: a non-collinear cluster produced the identical
+  `'new tiles must lie in a single row or column'` rejection for **163
+  consecutive settled observations**, because nothing else was ever
+  tried. After `STALL_OBSERVATIONS` observations with no commit at all,
+  a `STALLED` watchdog event fires and force-quarantines every confirmed
+  cell with any failure history, as a backstop beyond per-cell
+  quarantine alone.
 - Rack-camera processing (`record_rack`) is real but deliberately
   simpler than the board path: each player's rack frames are buffered
   and gated through the same stillness check (`stable_window`) the board
@@ -40,11 +59,12 @@ being a system rather than a collection of validated parts.
   number of rack cameras -- each is processed independently as its own
   frames arrive. The master plan's "only combine observations once all
   relevant cameras are simultaneously settled" is not implemented.
-- Validated so far only against synthetic frame sequences (see
-  `tests/unit/test_game_watcher.py`) and against real broadcast footage
-  run through short clips (see `perception/capture/run_watcher.py` and
-  `docs/`/README status notes) -- not yet a complete real game
-  end-to-end.
+- Validated against synthetic frame sequences (`tests/unit/test_game_watcher.py`
+  and `tests/slow/test_synthetic_full_game.py`, the latter replaying an
+  entire real 21-move game's ground truth with a controllable simulated
+  classifier accuracy) and against a complete real ~37-minute broadcast
+  (`perception/capture/run_watcher.py`, `autoscorer/eval/run_game_eval.py`,
+  and `docs/`/README status notes) -- not just short clips.
 - **Standalone by default, but can delegate to a live `GameSession`.**
   Pass `session=` and this stops tracking its own board/racks/turn
   numbers/gateway decision -- every detected move goes through
@@ -65,13 +85,18 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
 from autoscorer.api.session import GameSession
 from autoscorer.gamelogic.board import BOARD_SIZE, BoardState, Coord, Tile
-from autoscorer.gamelogic.movedetect.constraint_decoder import CLASSIFIER_BLANK_LABEL, decode_feasible_reading
+from autoscorer.gamelogic.movedetect.constraint_decoder import CellCandidates, CLASSIFIER_BLANK_LABEL, decode_feasible_reading
+from autoscorer.gamelogic.movedetect.placement_search import (
+    CandidatePlacement,
+    _cluster_cells,
+    enumerate_candidate_placements,
+)
 from autoscorer.gamelogic.movedetect.validator import validate_placement
 from autoscorer.gamelogic.movedetect.word_resolver import words_formed
 from autoscorer.gamelogic.models import MoveCandidate, MoveProcessingError, MoveType, ScoredMove
@@ -103,6 +128,7 @@ class WatcherState(str, Enum):
     CANDIDATE_VALIDATED = "CANDIDATE_VALIDATED"
     SCORED = "SCORED"
     APPLIED = "APPLIED"
+    STALLED = "STALLED"
 
 
 @dataclass(frozen=True)
@@ -113,6 +139,15 @@ class WatcherEvent:
     needs_operator: bool = False
     reason: Optional[str] = None
     pending: Optional[PendingMove] = None
+    attempted_cells: Tuple[Coord, ...] = ()
+    """The cell set a failed attempt tried to commit -- populated on
+    `needs_operator` failure paths so a caller (the eval harness, a stall
+    report) can name which squares are involved without re-deriving it
+    from a log. Empty on any event that isn't reporting a failed attempt."""
+    is_stall: bool = False
+    """True only for a watchdog event emitted after many consecutive
+    observations produced no commit at all -- see `STALL_OBSERVATIONS` in
+    the module docstring's stall-handling notes."""
 
 
 def _rack_multiset(tiles: Sequence[Tile]) -> Counter:
@@ -127,50 +162,39 @@ def _rack_multiset(tiles: Sequence[Tile]) -> Counter:
 # them rather than never.
 _REFERENCE_EMA_ALPHA = 0.3
 
-
-def _cluster_cells(cells: frozenset, board_before: BoardState) -> List[frozenset]:
-    """Groups new-cell coordinates into clusters connected through
-    contiguous occupied cells.
-
-    A single word's new tiles aren't always directly adjacent to each
-    OTHER -- a play can hook through an existing tile in the middle (e.g.
-    "ARB.RIZE", where the "." is a letter already on the board), which
-    would otherwise split one legal word's new cells into two groups that
-    never touch. Two new cells belong to the same cluster if they're
-    reachable through a straight run of occupied cells (new or already on
-    `board_before`) with no empty gap -- the same notion of "connected"
-    `word_resolver.run_through`/`validate_placement` already use, just
-    computed before any of these cells have actually been placed.
-
-    Clustering still matters in general: `board_before` can genuinely
-    have more than one turn's worth of unaccounted-for tiles at once --
-    e.g. a slow multi-tile word still being placed in one part of the
-    board while a separate, unrelated cell elsewhere is also new -- and
-    lumping unrelated cells into a single set would never validate as one
-    legal line.
-    """
-    remaining = set(cells)
-    clusters: List[frozenset] = []
-    while remaining:
-        seed = next(iter(remaining))
-        cluster = {seed}
-        frontier = [seed]
-        remaining.discard(seed)
-        while frontier:
-            r, c = frontier.pop()
-            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                nr, nc = r + dr, c + dc
-                # Walk through a run of already-occupied cells (old tiles
-                # this play hooks through) to find the next new cell in
-                # this direction, if any.
-                while (nr, nc) not in cells and board_before.get((nr, nc)) is not None:
-                    nr, nc = nr + dr, nc + dc
-                if (nr, nc) in remaining:
-                    remaining.discard((nr, nc))
-                    cluster.add((nr, nc))
-                    frontier.append((nr, nc))
-        clusters.append(frozenset(cluster))
-    return clusters
+# Never-jam commit search tuning (see the module docstring's "Never-jam
+# commit search" bullet). All four are observation counts, not frame
+# counts or wall-clock time -- one "observation" is one settled call to
+# `observe_board_frame` that had at least one confirmed new cell to
+# consider.
+FAILURE_QUARANTINE_THRESHOLD = 3
+"""A cell that participates in this many failed commit attempts (across
+this many distinct observations, at most one increment per cell per
+observation) gets quarantined -- excluded from candidate enumeration --
+rather than being retried forever."""
+QUARANTINE_TTL_OBSERVATIONS = 20
+"""How long a quarantined cell stays excluded before it's reconsidered.
+Time-limited, not permanent: a real tile that was quarantined for the
+wrong reason (e.g. a neighbor's fault, not its own) gets another chance
+against a since-advanced board; a genuinely persistent problem simply
+re-quarantines cheaply after failing again."""
+QUARANTINE_HEAL_DELAY = 2
+"""Observations a cell must stay quarantined before the adaptive
+reference is allowed to heal it (see
+`_refresh_reference_for_still_empty_cells`) -- keeps a cell that was
+JUST quarantined (which could still be a real tile mid-confirmation, not
+yet given a fair chance) from being instantly baked into the background."""
+QUARANTINE_HEAL_ALPHA = 0.1
+"""EMA weight used only for a healing (quarantined) cell -- lower than
+`_REFERENCE_EMA_ALPHA` since a mistaken heal is a real cost (a cell that
+never should have been treated as background), so it should take longer
+to matter than ordinary lighting-drift refresh does."""
+STALL_OBSERVATIONS = 30
+"""Backstop watchdog: if this many observations pass with no commit at
+all (even though per-cell quarantine is already excluding known-bad
+cells), something is still genuinely stuck -- emit a `STALLED` event and
+force-quarantine every confirmed cell with any failure history, rather
+than continuing to retry silently forever."""
 
 
 class GameWatcher:
@@ -278,6 +302,20 @@ class GameWatcher:
         # keyed by player_id since two rack cameras settle independently.
         self._rack_frame_buffers: Dict[str, List[np.ndarray]] = {}
 
+        # Never-jam commit search state (see the module docstring and the
+        # FAILURE_QUARANTINE_THRESHOLD/etc. constants above).
+        self._observation_index: int = 0
+        self._cell_failure_count: Counter = Counter()
+        self._quarantined: Dict[Coord, int] = {}  # coord -> observation_index its quarantine expires
+        self._quarantined_since: Dict[Coord, int] = {}  # coord -> observation_index it was quarantined
+        self._observations_since_commit: int = 0
+        self._soft_cells: frozenset = frozenset()
+        """Cells with partial (not unanimous) occupancy support across a
+        settled window -- populated once `board_reader` exposes per-cell
+        support tiers (WS3); always empty until then, which makes the
+        soft-cell-extension path in `placement_search` a guaranteed no-op
+        for now."""
+
     @property
     def board(self) -> BoardState:
         return self.session.game_state.board if self.session is not None else self._board
@@ -319,6 +357,17 @@ class GameWatcher:
         than better. Blending a small fraction of each new observation in
         still tracks genuine gradual drift over the many settled
         observations of a real game, while resisting any single bad one.
+
+        A quarantined cell (see `_quarantined_since`) is also eligible for
+        refresh once it's been quarantined for at least
+        `QUARANTINE_HEAL_DELAY` observations, even if it's currently
+        reading as occupied -- this is what breaks the feedback trap
+        where a persistently false-positive-occupied cell could otherwise
+        never heal (the plain `not occupancy[coord]` gate alone would
+        exclude it forever, since it never reads as empty). Healing uses
+        a lower alpha (`QUARANTINE_HEAL_ALPHA`) than ordinary drift
+        refresh: a mistaken heal is a real cost, so it should take longer
+        to matter than genuine lighting drift does.
         """
         if not self._adaptive_reference:
             return
@@ -328,12 +377,24 @@ class GameWatcher:
         for row in range(BOARD_SIZE):
             for col in range(BOARD_SIZE):
                 coord = (row, col)
-                if self.board.is_empty(coord) and not occupancy[coord]:
+                quarantined_since = self._quarantined_since.get(coord)
+                healing = (
+                    quarantined_since is not None
+                    and (self._observation_index - quarantined_since) >= QUARANTINE_HEAL_DELAY
+                )
+                if self.board.is_empty(coord) and (not occupancy[coord] or healing):
+                    alpha = QUARANTINE_HEAL_ALPHA if healing else _REFERENCE_EMA_ALPHA
                     x1, y1, x2, y2 = cell_bounds(row, col)
                     old = self.reference_board[y1:y2, x1:x2].astype(np.float32)
                     new = rectified_frame[y1:y2, x1:x2].astype(np.float32)
-                    blended = (1.0 - _REFERENCE_EMA_ALPHA) * old + _REFERENCE_EMA_ALPHA * new
+                    blended = (1.0 - alpha) * old + alpha * new
                     self.reference_board[y1:y2, x1:x2] = np.clip(blended, 0, 255).astype(np.uint8)
+
+    def _expire_quarantine(self) -> None:
+        expired = [cell for cell, expiry in self._quarantined.items() if self._observation_index >= expiry]
+        for cell in expired:
+            del self._quarantined[cell]
+            del self._quarantined_since[cell]
 
     def observe_board_frame(self, frame: np.ndarray, player_id: str) -> WatcherEvent:
         """Feed one sampled board-camera frame in. `player_id` is whose
@@ -356,6 +417,8 @@ class GameWatcher:
             return WatcherEvent(state=self.state)
 
         self.state = WatcherState.BOARD_SETTLED
+        self._observation_index += 1
+        self._expire_quarantine()
 
         candidates = read_new_cells_voted(
             window, self.calibration, self.reference_board, self.classifier, self.board,
@@ -386,99 +449,218 @@ class GameWatcher:
         self._confirmed_cells = (self._confirmed_cells | newly_confirmed) & current_cells
         self._last_candidate_cells = current_cells
 
-        # board_before can genuinely have more than one turn's worth of
-        # unaccounted-for tiles new at once (e.g. a slow multi-tile word
-        # still being placed in one part of the board while a separate,
-        # already-stable cell elsewhere is also new) -- clustering by
-        # adjacency before checking confirmation means one still-forming
-        # cluster elsewhere never prevents a different, fully-confirmed
-        # cluster from being acted on. Only ever act on ONE cluster per
-        # call, matching the one-turn-per-observation model; if more than
-        # one happens to be fully confirmed simultaneously, the rest stay
-        # exactly as confirmed as they are now and get picked up (now
-        # against an updated board_before) on the next call.
-        ready_cluster = next(
-            (cluster for cluster in _cluster_cells(current_cells, self.board) if cluster and cluster <= self._confirmed_cells),
-            None,
-        )
-        if ready_cluster is None:
+        # Quarantined cells are excluded from consideration (not from
+        # `_confirmed_cells` itself -- see `FAILURE_QUARANTINE_THRESHOLD`'s
+        # docstring: quarantine only affects the search below, not the raw
+        # perception-confirmation bookkeeping above).
+        considerable_confirmed = self._confirmed_cells - frozenset(self._quarantined)
+
+        # Cluster shape comes from the FULL current reading (confirmed or
+        # not) -- a cluster is only "ready" once EVERY one of its cells is
+        # confirmed. This is the same gate the original single-cluster
+        # design used, and it matters for a reason beyond the original
+        # motivation: enumerating candidates from the confirmed subset
+        # ALONE (dropping this gate) can make a genuinely-still-growing
+        # placement look like a clean, non-truncated one -- e.g. if a
+        # cell overlaps a coincidentally-identical earlier partial
+        # sighting, it can get "confirmed" one observation before its
+        # neighbor, and a naive per-candidate readiness check would try
+        # to commit it alone. Gating whole clusters, then enumerating
+        # candidates only within a cluster that's ENTIRELY confirmed,
+        # preserves the "don't act on a still-growing placement"
+        # guarantee while still fixing the non-collinear-cluster problem
+        # within an already-fully-confirmed cluster.
+        #
+        # Clustering here deliberately excludes quarantined cells first --
+        # otherwise quarantine could never actually free up a good
+        # neighbor: a quarantined cell would still glue itself to an
+        # adjacent, perfectly fine cell via plain `current_cells`
+        # clustering, permanently keeping that cluster un-ready even
+        # though we've already given the quarantined cell a fair chance
+        # and moved on. A cell that simply hasn't been confirmed YET is
+        # different from one that's been tried and quarantined -- the
+        # former still needs `current_cells` (not just the confirmed
+        # subset) to detect "this cluster is still growing, wait"; the
+        # latter has already had its chance and shouldn't keep blocking.
+        clusterable_cells = current_cells - frozenset(self._quarantined)
+        ready_clusters = [
+            cluster for cluster in _cluster_cells(clusterable_cells, self.board)
+            if cluster and cluster <= considerable_confirmed
+        ]
+
+        self.state = WatcherState.DIFF_COMPUTED
+        cell_candidates_by_coord = {cc.coord: cc for cc in candidates}
+        failed_cells_this_observation: set = set()
+        first_failure_reason: Optional[str] = None
+        first_failure_cells: Tuple[Coord, ...] = ()
+        attempted_anything = False
+
+        for cluster in ready_clusters:
+            # Rank descending by cell count first (the true placement is
+            # always a superset of every truncation of itself, so whenever
+            # every real cell is confirmed, the truth wins outright before
+            # any other tiebreak matters -- see placement_search.py), then
+            # a stable, deterministic tiebreak. (A lexicon-validity and
+            # decoded log-probability tiebreak are added once WS2's real
+            # lexicon exists to rank against.)
+            ranked = sorted(
+                enumerate_candidate_placements(cluster, self.board, self._soft_cells),
+                key=lambda c: (-len(c.cells), sorted(c.cells)),
+            )
+            for candidate in ranked:
+                attempted_anything = True
+                cell_candidates = [cell_candidates_by_coord[coord] for coord in sorted(candidate.cells)]
+                outcome = self._attempt_commit(candidate, cell_candidates, player_id)
+                if isinstance(outcome, WatcherEvent):
+                    self._observations_since_commit = 0
+                    return outcome
+
+                reason, attempted_cells = outcome
+                if first_failure_reason is None:
+                    first_failure_reason, first_failure_cells = reason, attempted_cells
+                # Attribute the failure to whatever cells the outcome
+                # itself named -- usually the whole candidate, but a
+                # blank failure names only the actual blank cell(s) (see
+                # `_attempt_commit`), so a multi-cell candidate with one
+                # bad cell doesn't quarantine its good cells right along
+                # with it.
+                for cell in attempted_cells:
+                    if cell in failed_cells_this_observation:
+                        continue
+                    failed_cells_this_observation.add(cell)
+                    self._cell_failure_count[cell] += 1
+                    if self._cell_failure_count[cell] >= FAILURE_QUARANTINE_THRESHOLD:
+                        self._quarantined[cell] = self._observation_index + QUARANTINE_TTL_OBSERVATIONS
+                        self._quarantined_since[cell] = self._observation_index
+
+        self.state = WatcherState.DIFF_COMPUTED
+
+        if not attempted_anything:
             # No cluster has (yet) had every one of its cells survive a
             # second independent look -- could be a completed turn, or a
             # player mid-placement who just happened to pause, or one
-            # cell whose visibility is still marginal. Don't act yet.
-            self.state = WatcherState.DIFF_COMPUTED
+            # cell whose visibility is still marginal. Don't act yet, and
+            # don't count this toward the stall watchdog -- nothing was
+            # actually attempted and failed, there's just nothing ready.
             return WatcherEvent(state=self.state)
 
-        # Confirmed: every cell in this cluster has now been seen in (at
-        # least) two consecutive settled observations -- the placement
-        # has stopped growing, so it's safe to treat as a genuinely
-        # completed turn. Confirmation state is deliberately NOT cleared
-        # here yet -- only once we actually reach a scored outcome below.
-        # A confirmed cluster that fails validation/pool-check for an
-        # unrelated reason should stay confirmed for the next attempt,
-        # rather than forcing the whole two-observation wait to repeat
-        # from scratch every single time a retry fails.
-        self.state = WatcherState.DIFF_COMPUTED
-        candidates = [cc for cc in candidates if cc.coord in ready_cluster]
+        self._observations_since_commit += 1
+        if self._observations_since_commit >= STALL_OBSERVATIONS:
+            # A backstop beyond per-cell quarantine: something is still
+            # stuck even with known-bad cells already excluded. Force-
+            # quarantine every confirmed cell with any failure history so
+            # the next observation gets a genuinely fresh look.
+            for cell in self._confirmed_cells:
+                if self._cell_failure_count.get(cell, 0) > 0 and cell not in self._quarantined:
+                    self._quarantined[cell] = self._observation_index + QUARANTINE_TTL_OBSERVATIONS
+                    self._quarantined_since[cell] = self._observation_index
+            self._observations_since_commit = 0
+            self.state = WatcherState.STALLED
+            return WatcherEvent(
+                state=self.state, needs_operator=True, is_stall=True,
+                reason=f"no commit in {STALL_OBSERVATIONS} observations; last failure: {first_failure_reason}",
+                attempted_cells=first_failure_cells,
+            )
 
-        decoded = decode_feasible_reading(candidates, self.board, list(self.racks.values()))
-        conf_by_coord = {cc.coord: dict(cc.candidates) for cc in candidates}
+        return WatcherEvent(
+            state=self.state, needs_operator=True, reason=first_failure_reason,
+            attempted_cells=first_failure_cells,
+        )
+
+    def _attempt_commit(
+        self, candidate: CandidatePlacement, cell_candidates: List[CellCandidates], player_id: str,
+    ) -> Union[WatcherEvent, Tuple[str, Tuple[Coord, ...]]]:
+        """Tries to commit exactly one candidate placement. Returns a
+        `WatcherEvent` if this candidate reached a real outcome (an
+        auto-publish, or a genuine operator-pending move) or a `(reason,
+        attempted_cells)` tuple if it failed for a reason the caller's
+        search loop should record and move past, trying the next
+        candidate instead of giving up on the whole observation.
+        """
+        attempted_cells = tuple(sorted(candidate.cells))
+        decoded = decode_feasible_reading(cell_candidates, self.board, list(self.racks.values()))
+        conf_by_coord = {cc.coord: dict(cc.candidates) for cc in cell_candidates}
         min_confidence = min(conf_by_coord[coord][label] for coord, label in decoded.items())
 
-        if any(label == CLASSIFIER_BLANK_LABEL for label in decoded.values()):
-            return WatcherEvent(
-                state=self.state, confidence=min_confidence, needs_operator=True,
-                reason="a detected tile is a blank -- letter unknown until an operator confirms what it's played as",
+        blank_coords = tuple(sorted(coord for coord, label in decoded.items() if label == CLASSIFIER_BLANK_LABEL))
+        if blank_coords:
+            # Attribute this failure only to the actual blank cell(s), not
+            # every cell in the candidate -- a multi-cell word with one
+            # genuine blank in it (e.g. the real WESPA move "PInOTa.E",
+            # 7 cells/2 blanks) would otherwise quarantine its five
+            # perfectly good letters right alongside the two blanks,
+            # since they all "failed" together as part of the same
+            # candidate. Once only the blanks are quarantined, the
+            # remaining good cells can be re-tried (as their own, smaller
+            # candidates) instead of the whole turn going silent.
+            return (
+                "a detected tile is a blank -- letter unknown until an operator confirms what it's played as",
+                blank_coords,
             )
 
         placements = {coord: Tile(letter=label, is_blank=False) for coord, label in decoded.items()}
         try:
             board_after = self.board.with_placements(placements)
         except ValueError as exc:
-            return WatcherEvent(state=self.state, confidence=min_confidence, needs_operator=True, reason=str(exc))
+            return (str(exc), attempted_cells)
 
         new_cells = list(placements.keys())
         validation = validate_placement(self.board, board_after, new_cells)
         if not validation.ok:
-            return WatcherEvent(
-                state=self.state, confidence=min_confidence, needs_operator=True, reason=validation.reason,
-            )
-
-        self.state = WatcherState.CANDIDATE_VALIDATED
+            return (validation.reason, attempted_cells)
 
         try:
             compute_pool_state(board_after, list(self.racks.values()))
         except PoolInvariantViolation as exc:
-            return WatcherEvent(
-                state=self.state, confidence=min_confidence,
-                needs_operator=True, reason=f"pool invariant violated: {exc}",
-            )
+            return (f"pool invariant violated: {exc}", attempted_cells)
 
         # Every check passed -- this reading is genuinely being acted on,
         # so the next observation starts a fresh confirmation cycle.
         self._confirmed_cells = frozenset()
         self._last_candidate_cells = frozenset()
 
+        # A candidate smaller than the biggest one its cluster could have
+        # produced (a truncation), or one extended with a soft-support
+        # cell, never auto-publishes regardless of confidence -- both are
+        # real, measured risks (see placement_search.py's docstring): a
+        # truncated word can still pass every geometric/pool check, and so
+        # can a contaminated superset. An operator is the correct backstop
+        # for the residual neither geometry nor confidence can rule out.
+        is_truncated = len(candidate.cells) < candidate.cluster_max_size
+        force_operator = is_truncated or candidate.used_soft_cells
+        # `publish_confidence` only ever matters to
+        # AUTONOMOUS_WITH_CONFIDENCE_FALLBACK -- plain AUTONOMOUS ignores
+        # confidence entirely by design (`PublishGateway.should_auto_publish`
+        # returns True unconditionally), so forcing operator review for a
+        # truncated/soft-extended candidate cannot rely on confidence alone
+        # in standalone mode; it bypasses the gateway outright, below, the
+        # same way the blank check above already does.
+        publish_confidence = 0.0 if force_operator else min_confidence
+
         if self.session is not None:
-            return self._submit_play_via_session(decoded, player_id, min_confidence)
+            return self._submit_play_via_session(decoded, player_id, min_confidence, publish_confidence, force_operator)
 
         words = words_formed(board_after, new_cells)
         move_score = score_move(board_after, words, new_cells)
         provisional_turn = self._turn_number + 1
-        candidate = MoveCandidate(
+        move_candidate = MoveCandidate(
             turn_number=provisional_turn, player_id=player_id, move_type=MoveType.PLAY,
             new_cells=tuple(new_cells),
         )
-        scored_move = ScoredMove(candidate=candidate, move_score=move_score)
+        scored_move = ScoredMove(candidate=move_candidate, move_score=move_score)
         self.state = WatcherState.SCORED
 
-        if not self.publish_gateway.should_auto_publish(min_confidence):
+        if force_operator or not self.publish_gateway.should_auto_publish(publish_confidence):
             pending = PendingMove(
                 scored_move=scored_move, board_after=board_after, racks_after={}, confidence=min_confidence,
             )
+            reason = (
+                "truncated or soft-supported placement always needs operator review" if force_operator
+                else "confidence below gateway threshold"
+            )
             return WatcherEvent(
                 state=self.state, scored_move=scored_move, confidence=min_confidence,
-                needs_operator=True, pending=pending, reason="confidence below gateway threshold",
+                needs_operator=True, pending=pending, reason=reason,
             )
 
         self._board = board_after
@@ -487,7 +669,12 @@ class GameWatcher:
         return WatcherEvent(state=self.state, scored_move=scored_move, confidence=min_confidence)
 
     def _submit_play_via_session(
-        self, decoded: Dict[Coord, str], player_id: str, min_confidence: float,
+        self,
+        decoded: Dict[Coord, str],
+        player_id: str,
+        min_confidence: float,
+        publish_confidence: Optional[float] = None,
+        force_operator: bool = False,
     ) -> WatcherEvent:
         """The delegated-mode path: hands the decoded reading to
         `GameSession.submit_move` -- the same call a human operator's
@@ -498,9 +685,17 @@ class GameWatcher:
         board `submit_move` will use), so `MoveProcessingError` shouldn't
         normally trigger -- handled anyway since `submit_move`'s contract
         allows it.
+
+        `publish_confidence`, if lower than `min_confidence`, forces the
+        session's own gateway to deny auto-publish (a truncated or
+        soft-supported candidate) while `min_confidence` still reports the
+        real value for diagnostics.
         """
         new_tiles = [(coord, label, False) for coord, label in decoded.items()]
-        result = self.session.submit_move(player_id, new_tiles=new_tiles, confidence=min_confidence)
+        result = self.session.submit_move(
+            player_id, new_tiles=new_tiles,
+            confidence=publish_confidence if publish_confidence is not None else min_confidence,
+        )
 
         if isinstance(result.outcome, MoveProcessingError):
             return WatcherEvent(
@@ -510,10 +705,15 @@ class GameWatcher:
         self.state = WatcherState.APPLIED if result.published else WatcherState.SCORED
         turn_number = result.outcome.candidate.turn_number
         pending = None if result.published else self.session.pending.get(turn_number)
+        if result.published:
+            reason = None
+        elif force_operator:
+            reason = "truncated or soft-supported placement always needs operator review"
+        else:
+            reason = "confidence below gateway threshold"
         return WatcherEvent(
             state=self.state, scored_move=result.outcome, confidence=min_confidence,
-            needs_operator=not result.published, pending=pending,
-            reason=None if result.published else "confidence below gateway threshold",
+            needs_operator=not result.published, pending=pending, reason=reason,
         )
 
     def record_rack(

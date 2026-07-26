@@ -15,12 +15,17 @@ publish-gateway safety net; it just can't classify EXCHANGE/PASS turns or
 tighten constraint decoding with real rack contents.
 
 Turn alternation is simple and deliberate: `player1_id` moves first, and
-the two alternate after every confirmed PLAY. This is exactly as much
-"whose turn is it" logic as vision alone can ever provide (see
-game_watcher.py's own docstring on why PASS detection is out of scope) --
-a real deployment with a game clock could drive this more precisely, but
-strict alternation is the correct assumption for any game with no passes
-or challenges, and this project has no clock signal to do better with.
+the two alternate after every PLAY-carrying event -- whether it
+auto-published or is only pending operator review, since either way a
+real move was genuinely detected on the board (alternating only on
+auto-published moves would desync every subsequent player attribution
+after the very first move that needed a human, in any mode other than
+pure AUTONOMOUS). This is exactly as much "whose turn is it" logic as
+vision alone can ever provide (see game_watcher.py's own docstring on why
+PASS detection is out of scope) -- a real deployment with a game clock
+could drive this more precisely, but strict alternation is the correct
+assumption for any game with no passes or challenges, and this project
+has no clock signal to do better with.
 """
 from __future__ import annotations
 
@@ -30,8 +35,9 @@ from pathlib import Path
 from typing import List, Optional
 
 from autoscorer.api.session import GameSession
-from autoscorer.gamelogic.movedetect.game_watcher import GameWatcher, WatcherEvent, WatcherState
+from autoscorer.gamelogic.movedetect.game_watcher import GameWatcher, WatcherEvent
 from autoscorer.gamelogic.models import MoveType
+from autoscorer.gamelogic.notation import format_square
 from autoscorer.gamelogic.publish import PublishGateway, PublishMode
 from autoscorer.perception.calibration.venue_profile import load_venue_profile
 from autoscorer.perception.capture.video_source import VideoFrameSource
@@ -47,7 +53,13 @@ PUBLISH_MODES = {
 def format_event(event: WatcherEvent, player_id: Optional[str]) -> Optional[str]:
     """A human-readable one-line summary, or None for a no-op event (still
     settling, or settled with nothing new -- most calls, and not worth
-    printing one line per sampled frame for)."""
+    printing one line per sampled frame for). A stall watchdog event has
+    no `scored_move` (nothing ever committed) but must still be printed --
+    it's precisely the kind of event a jammed watcher previously produced
+    silently, forever, with nothing in this CLI's output to show for it."""
+    if event.is_stall:
+        squares = ", ".join(sorted(format_square(c) for c in event.attempted_cells))
+        return f"[STALLED] {player_id}: {event.reason} squares=[{squares}]"
     if event.scored_move is None:
         return None
 
@@ -76,12 +88,17 @@ def run_watcher_on_video(
     device: str = "cpu",
     session: Optional[GameSession] = None,
     on_event=None,
+    on_frame_event=None,
 ) -> List[WatcherEvent]:
     """Runs `GameWatcher` against every sampled frame of `video_path`,
-    alternating `player1_id`/`player2_id` after each confirmed PLAY.
-    Returns every event that carried a detected move (empty settle/no-op
-    events are filtered out -- callers wanting the raw per-frame trace
-    should drive `GameWatcher` directly instead).
+    alternating `player1_id`/`player2_id` after each PLAY-carrying event
+    (whether it auto-published or is only pending operator review --
+    either way a real move was detected on the board, and the *next*
+    frame belongs to the other player regardless of when the pending one
+    gets approved). Returns every event that carried a detected move
+    (empty settle/no-op events are filtered out -- callers wanting the
+    raw per-frame trace should pass `on_frame_event` instead of relying
+    on the return value).
 
     Pass `session` (an existing `GameSession`, e.g. the FastAPI app's live
     one) to run in delegated mode -- every detected move then flows
@@ -93,7 +110,14 @@ def run_watcher_on_video(
     `on_event`, if given, is called with every move-carrying event as it
     happens -- the hook `main.py`'s `/watch` endpoint uses to broadcast an
     overlay update the moment a move actually publishes, without this
-    function needing to know anything about WebSockets.
+    function needing to know anything about WebSockets. Do not repurpose
+    this for anything that needs to see EVERY frame's event (including
+    settle/no-op/stall ones) -- `/watch`'s semantics depend on only ever
+    seeing move-carrying events here. Use `on_frame_event(frame_index,
+    event)` for that instead: it fires for every single event, before the
+    move-carrying filter, which is what a stall/health report needs (a
+    permanently jammed watcher previously produced nothing at all for
+    `on_event` to see).
     """
     profile = load_venue_profile(venue_name)
     classifier = TileClassifierModel(classifier_path, device=device)
@@ -121,6 +145,15 @@ def run_watcher_on_video(
             if max_frames is not None and i >= max_frames:
                 break
             event = watcher.observe_board_frame(frame, player_id=current_player)
+
+            if on_frame_event is not None:
+                on_frame_event(i, event)
+
+            if event.is_stall:
+                line = format_event(event, current_player)
+                if line:
+                    print(line)
+
             if event.scored_move is None:
                 continue
 
@@ -131,7 +164,7 @@ def run_watcher_on_video(
             if on_event is not None:
                 on_event(event)
 
-            if event.state == WatcherState.APPLIED and event.scored_move.candidate.move_type == MoveType.PLAY:
+            if event.scored_move.candidate.move_type == MoveType.PLAY:
                 current_player, other_player = other_player, current_player
 
     return events

@@ -5,15 +5,18 @@ import numpy as np
 import pytest
 import torch
 
-from autoscorer.gamelogic.board import BOARD_SIZE, CENTER, PREMIUM_SQUARES
+from autoscorer.gamelogic.board import CENTER
 from autoscorer.gamelogic.models import MoveType
 from autoscorer.gamelogic.publish import PublishMode
-from autoscorer.perception.calibration.homography import CANONICAL_SIZE, cell_bounds
+from autoscorer.perception.calibration.homography import CANONICAL_SIZE
 from autoscorer.perception.calibration.venue_profile import VenueProfile, save_venue_profile
 from autoscorer.perception.capture.run_watcher import format_event, run_watcher_on_video
 from training.classify.infer import TileClassifierModel
 from training.classify.train import run_training, save_checkpoint
-from training.synth_render.tile_renderer import SQUARE_COLORS, augment_tile, render_tile
+from training.synth_render.tile_renderer import augment_tile, render_tile
+
+from tests.support.synth_board import blank_board_image as _blank_board_image
+from tests.support.synth_board import place_tile as _place_tile_full
 
 cv2_module = pytest.importorskip("cv2")
 
@@ -24,22 +27,8 @@ cv2_module = pytest.importorskip("cv2")
 IDENTITY_CORNERS = ((0.0, 0.0), (CANONICAL_SIZE, 0.0), (CANONICAL_SIZE, CANONICAL_SIZE), (0.0, CANONICAL_SIZE))
 
 
-def _blank_board_image() -> np.ndarray:
-    img = np.zeros((CANONICAL_SIZE, CANONICAL_SIZE, 3), dtype=np.uint8)
-    for row in range(BOARD_SIZE):
-        for col in range(BOARD_SIZE):
-            code = PREMIUM_SQUARES.get((row, col), "plain")
-            color = SQUARE_COLORS[code]
-            x1, y1, x2, y2 = cell_bounds(row, col)
-            img[y1:y2, x1:x2] = color[::-1]
-    return img
-
-
 def _place_tile(board_img: np.ndarray, row: int, col: int, letter, rng: random.Random) -> None:
-    tile = augment_tile(render_tile(letter, rng=rng), rng=rng)
-    tile_arr = np.array(tile)[:, :, ::-1]
-    x1, y1, x2, y2 = cell_bounds(row, col)
-    board_img[y1:y2, x1:x2] = tile_arr
+    _place_tile_full(board_img, row, col, letter, rng)
 
 
 def _train_tiny_classifier(tmp_path, labels=("A", "N", "T", "BLANK")):

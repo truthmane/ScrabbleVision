@@ -14,6 +14,10 @@ dev = ["pytest>=7.0", "httpx>=0.27"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "slow: full-game/integration-scale tests, no external assets needed",
+    "realvideo: needs a real, uncommitted broadcast video asset via env var; skipped otherwise",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

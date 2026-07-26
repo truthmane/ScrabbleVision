@@ -246,6 +246,18 @@ def rack_to_gcg(rack: Sequence[Tile]) -> str:
     return "".join("?" if tile.letter is None else tile.letter for tile in rack)
 
 
+def format_square(coord: Coord) -> str:
+    """A single 0-indexed (row, col) as standard tournament notation, e.g.
+    (7, 7) -> "H8" (the center square). Column-letter first, then
+    row-number -- this is a single square, not a play position/direction
+    (see `format_position` for that), so there's no across/down ambiguity
+    to resolve. Used everywhere a coordinate is shown to a human (logs,
+    stall reports, eval metrics, operator-facing reasons) instead of the
+    internal 0-indexed tuple, which is easy to misread off by one."""
+    row, col = coord
+    return f"{chr(ord('A') + col)}{row + 1}"
+
+
 def format_position(word_cells: Sequence[Coord]) -> str:
     """Inverse of `parse_position`: digit-first ("8G") reads across, single
     row; letter-first ("E8") reads down, single column. A one-cell word

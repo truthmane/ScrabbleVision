@@ -261,3 +261,93 @@ An ML-powered auto-annotator for livestreamed Scrabble games
   band, so lowering the threshold to rescue thin letters would likely
   resurrect the false-positive problems already fixed this session --
   a genuine calibration ceiling for this broadcast, not a quick fix.
+- **The "classifier/occupancy accuracy ceiling" diagnosis above was
+  wrong, and an audit corrected it with a measurement, not a guess.**
+  Requested an accuracy/full-game audit; instead of trusting the prior
+  session's own conclusion, re-ran the real Game 1 log and counted
+  failure reasons directly: **163 consecutive settled observations, every
+  single one rejected with the identical reason**,
+  `'new tiles must lie in a single row or column'`. Not a letter-accuracy
+  problem at all -- three real logic defects in `GameWatcher`'s commit
+  path: (1) `_cluster_cells` groups new cells by connectivity, not
+  collinearity, so an L-shaped/staircase group of adjacent cells clusters
+  as one un-validatable blob; (2) the watcher tried only the *first*
+  confirmed cluster per observation and gave up entirely on failure,
+  so the same bad blob got re-picked forever; (3) nothing ever expired a
+  persistently-bad cell -- the adaptive reference's healing gate
+  (`not occupancy[coord]`) structurally excludes any cell that has
+  already crossed the occupancy threshold, so a false-positive cell can
+  never recover on its own. A fourth, independent jam existed on
+  blanks: the blank-detected path returned before clearing confirmation,
+  so a cluster containing a blank (Game 1 move 19, `PIOTE?? 14B
+  PInOTa.E`, two blanks) re-triggered identically forever regardless of
+  classifier accuracy -- reproduced in a **36-second synthetic test with
+  a perfect (p=1.0) classifier**, proving it was never about letter
+  accuracy at all.
+- **Fixed with a real search, not a threshold tweak.** New module
+  `autoscorer/gamelogic/movedetect/placement_search.py`:
+  `enumerate_candidate_placements` makes every candidate collinear and
+  contiguous-through-the-board *by construction* (splitting a cluster
+  into maximal per-row/per-column runs, still bridging through existing
+  tiles for hooked words), so the two dominant rejection reasons become
+  structurally unreachable. `GameWatcher`'s commit loop now tries every
+  ranked candidate (largest first) instead of one, and a cell that fails
+  `FAILURE_QUARANTINE_THRESHOLD` (3) times is quarantined -- excluded
+  from consideration -- for `QUARANTINE_TTL_OBSERVATIONS` (20)
+  observations, which is what stops one bad cell from blocking every
+  other placement on the board. A blank failure is attributed only to
+  the actual blank cell(s), not the whole candidate -- found by testing:
+  without this, a 7-cell word with one blank in it would quarantine its
+  five perfectly good letters right alongside the blank. A candidate
+  smaller than the largest one its cluster could have produced (a
+  truncation) never auto-publishes, regardless of confidence or publish
+  mode -- measured risk: dropping one cell from each of 302 real plays
+  across 13 fixtures still passes pure geometry 39% of the time, so a
+  truncated word could otherwise silently commit a wrong score. A
+  `STALL_OBSERVATIONS` (30) watchdog is a backstop beyond per-cell
+  quarantine, force-quarantining every confirmed cell with any failure
+  history if nothing commits for that long.
+- **Built the measurement harness this whole audit exposed was
+  missing** (`autoscorer/eval/`): before this, every accuracy claim in
+  this README was established by hand-reading a log. `gcg_truth.py`
+  reuses the already-validated GCG replay machinery for ground truth;
+  `alignment.py` is a monotone sequence alignment (sequences can skip,
+  merge, or split turns, so this isn't a zip) over cell-set Jaccard
+  similarity; `metrics.py` builds a `GameEvalReport` with everything
+  reported separately (turns detected, first divergence, cell F1, letter
+  accuracy, exact score matches, stalls, provenance) rather than
+  collapsed into one number; `run_game_eval.py` is the CLI that runs the
+  real pipeline against a video and a `.gcg` and checks for regressions
+  against a committed baseline JSON -- the video itself can never be
+  committed (copyright), but the baseline now is, so today's numbers are
+  a contract future work has to improve against, not a one-off printout.
+  `tests/slow/test_synthetic_full_game.py` reproduces the whole thing
+  without any video or GPU: a `NoisyOracleClassifier`
+  (`tests/support/noisy_oracle.py`) nearest-neighbor identifies synthetic
+  crops against a registry of everything it actually rendered, then
+  injects controlled per-cell error at a chosen accuracy -- at `p=1.0`
+  the pipeline must complete all 21 real moves with zero jam; at `p=0.72`
+  (the deployed checkpoint's real measured accuracy) it must never get
+  permanently stuck, even though it won't get every turn right.
+- **Measured, honest before/after on the real Game 1 broadcast**:
+  `longest_stall` **86 → 3** settled observations (the actual jam is
+  fixed, not just shortened); `detected_turns` **11 → 24**; turns cleanly
+  matched to the real GCG **11 → 15**; `exact_score_matches` **5 → 6**;
+  final board cells correct **39 → 50 of 95**; wall clock **1349s → 384s**
+  (3.5x faster, almost entirely because the pipeline no longer burns
+  hundreds of observations retrying one permanently-stuck blob). The one
+  metric that got honestly worse: `cell_f1_micro` **0.981 → 0.935** --
+  expected and accepted, not a regression to chase: the old pipeline
+  never got far enough into the game to be wrong about the harder later
+  content, so its cell-level average was measured over an easier, shorter
+  slice. New stalls are shorter (2-3 observations, not 163) and a
+  different, more benign reason: `'placement is not connected to any
+  existing tile'` -- real occupancy/classification uncertainty in a
+  harder part of the board, not a logic bug. Remaining gap (missed/split
+  turns, wrong letters) is squarely WS2 (lexicon-constrained decoding)
+  and WS3 (occupancy signal) territory, not more turn-detection logic.
+  **275 tests passing** (was 235; +40 new: alignment, metrics, notation,
+  placement_search, the synthetic full-game test, and new GameWatcher
+  regression tests for candidate fallback, quarantine, truncation, the
+  stall watchdog, and phony-word safety), one pre-existing flaky test
+  documented as before, unrelated to any of this.

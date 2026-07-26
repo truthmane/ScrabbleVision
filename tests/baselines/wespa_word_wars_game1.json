@@ -1,0 +1,120 @@
+{
+  "real_plays": 21,
+  "detected_turns": 24,
+  "matched_1to1": 15,
+  "merged": 0,
+  "split": 2,
+  "missed": 4,
+  "spurious": 3,
+  "first_divergence_index": 3,
+  "cell_precision_macro": 0.9666666666666667,
+  "cell_recall_macro": 0.9033333333333334,
+  "cell_f1_macro": 0.9261904761904761,
+  "cell_precision_micro": 0.9830508474576272,
+  "cell_recall_micro": 0.8923076923076924,
+  "cell_f1_micro": 0.9354838709677421,
+  "letter_accuracy": 0.7931034482758621,
+  "letter_correct": 46,
+  "letter_total": 58,
+  "blank_recovered": 0,
+  "blank_total": 0,
+  "exact_score_matches": 6,
+  "score_abs_errors": [
+    0,
+    0,
+    7,
+    8,
+    0,
+    0,
+    9,
+    3,
+    0,
+    12,
+    12,
+    4,
+    8,
+    0,
+    4
+  ],
+  "final_cumulative_drift": {
+    "AdamLogan": -155,
+    "NigelRichards": -141
+  },
+  "final_board_correct": 50,
+  "final_board_truth_total": 95,
+  "final_board_wrong": 17,
+  "final_board_missing": 28,
+  "final_board_extra": 0,
+  "stalls": [
+    {
+      "start_frame": 261,
+      "length": 3,
+      "reason": "placement is not connected to any existing tile",
+      "attempted_squares": [
+        "O10",
+        "O11",
+        "O5",
+        "O6",
+        "O7",
+        "O8",
+        "O9"
+      ]
+    },
+    {
+      "start_frame": 386,
+      "length": 3,
+      "reason": "placement is not connected to any existing tile",
+      "attempted_squares": [
+        "N10",
+        "N11",
+        "N12",
+        "N13",
+        "N14",
+        "N15"
+      ]
+    },
+    {
+      "start_frame": 413,
+      "length": 2,
+      "reason": "placement is not connected to any existing tile",
+      "attempted_squares": [
+        "K8"
+      ]
+    },
+    {
+      "start_frame": 413,
+      "length": 1,
+      "reason": "placement is not connected to any existing tile",
+      "attempted_squares": [
+        "K8"
+      ]
+    },
+    {
+      "start_frame": 430,
+      "length": 1,
+      "reason": "placement is not connected to any existing tile",
+      "attempted_squares": [
+        "E14",
+        "F14"
+      ]
+    },
+    {
+      "start_frame": 431,
+      "length": 2,
+      "reason": "placement is not connected to any existing tile",
+      "attempted_squares": [
+        "E14"
+      ]
+    }
+  ],
+  "longest_stall": 3,
+  "operator_routed_fraction": 0.25,
+  "provenance": {
+    "lexicon_name": null,
+    "lexicon_word_count": null,
+    "classifier_checkpoint": "models/tile_classifier_v1.pt",
+    "venue": "wespa_word_wars",
+    "git_sha": "fcee213",
+    "wall_clock_s": 384.42649602890015
+  }
+}

@@ -1,6 +1,7 @@
 import pytest
 
 from autoscorer.gamelogic.notation import (
+    format_square,
     parse_position,
     parse_ticker_line,
     parse_word,
@@ -86,3 +87,14 @@ def test_resolve_new_tiles_across_word_with_blank():
     assert [p.coord for p in placements] == [(6 + i, 9) for i in range(7)]
     assert [p.letter for p in placements] == list("TASKING")
     assert [p.is_blank for p in placements] == [False, True, False, False, False, False, False]
+
+
+def test_format_square_center_is_h8():
+    assert format_square((7, 7)) == "H8"
+
+
+def test_format_square_matches_parse_position_round_trip():
+    coord, _ = parse_position("14B")
+    assert format_square(coord) == "B14"
+    coord, _ = parse_position("J7")
+    assert format_square(coord) == "J7"
