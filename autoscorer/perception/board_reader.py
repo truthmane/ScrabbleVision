@@ -161,13 +161,26 @@ def read_new_cells_voted(
     (WESPA "RAGBOLT"'s final T) crossed the occupancy threshold in *some*
     frames of its window but not all (diff 38.96 against a 38.0
     threshold, a bare margin), so a hard AND silently dropped a real tile
-    rather than just noise. Both are real, so both get returned instead of
-    one being discarded outright: HARD cells behave exactly as before
-    (zero regression), while SOFT cells are still classified here (a
-    caller needs their `CellCandidates` to act on them at all) but are
-    left for `GameWatcher` to use only as an optional in-line extension of
-    an already-confirmed HARD run (`placement_search.py`'s `soft_cells`
-    parameter) -- never as an ordinary confirmed cell in their own right.
+    rather than just noise.
+
+    **A SOFT cell is only ever surfaced if it's orthogonally adjacent to a
+    HARD cell in this same window** (not "anywhere `votes > 0` on the
+    board"). Confirmed against the real WESPA broadcast: any-vote-at-all
+    is far too permissive on real noisy footage -- ordinary compression/
+    lighting flicker nudges plenty of genuinely empty cells scattered
+    across the whole 225-cell board over threshold in a single frame out
+    of the window, exactly the class of noise unanimity was built to
+    reject in the first place, and each one classified across every frame
+    at `top_k=len(classifier.classes)` (see this docstring's cost warning
+    below) turned a several-minute real-video run into 30+ minutes with
+    no corresponding accuracy gain. Restricting SOFT to HARD's immediate
+    neighbors keeps the RAGBOLT-style fix (a real tile just outside an
+    already-detected run) while bounding the extra cost to a small
+    multiple of the genuine new-tile count, not the whole board. A cell
+    with partial support far from any HARD cell is, correctly, still
+    invisible here -- it can never anchor a placement on its own (see
+    `GameWatcher._soft_cells`), so there was never anything to gain by
+    classifying it.
 
     See `read_board`'s docstring on `diff_threshold`/`gradient_threshold` --
     **getting these wrong here is expensive, not just inaccurate**: every
@@ -192,12 +205,24 @@ def read_new_cells_voted(
         for coord in per_frame_occupancy[0]
     }
 
-    new_cells = [
+    hard_cells = {
         (row, col)
         for row in range(BOARD_SIZE)
         for col in range(BOARD_SIZE)
-        if votes[(row, col)] > 0 and board_before.is_empty((row, col))
-    ]
+        if votes[(row, col)] == num_frames and board_before.is_empty((row, col))
+    }
+    soft_neighbors = set()
+    for row, col in hard_cells:
+        for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            neighbor = (row + dr, col + dc)
+            if (
+                0 <= neighbor[0] < BOARD_SIZE and 0 <= neighbor[1] < BOARD_SIZE
+                and neighbor not in hard_cells
+                and 0 < votes[neighbor] < num_frames
+                and board_before.is_empty(neighbor)
+            ):
+                soft_neighbors.add(neighbor)
+    new_cells = sorted(hard_cells | soft_neighbors)
     if not new_cells:
         return []
 

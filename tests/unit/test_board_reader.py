@@ -210,9 +210,16 @@ def test_read_new_cells_voted_tiers_partial_occupancy_agreement_as_soft(tmp_path
     keep both cases visible instead of collapsing them to the same
     boolean: a cell every frame agrees on is HARD (`is_soft=False`,
     unchanged from the original behavior); a cell only some frames agree
-    on is SOFT (`is_soft=True`) -- present in the result, but never
-    trusted as an ordinary confirmed cell by `GameWatcher` (see
-    `_soft_cells` there), only as optional in-line extension material.
+    on is SOFT (`is_soft=True`) -- but **only when adjacent to a HARD
+    cell**. A second real-video run against the full WESPA broadcast
+    found that surfacing every partial-vote cell *anywhere on the board*
+    reintroduces exactly the widespread noise unanimity was built to
+    reject (ordinary compression/lighting flicker nudges plenty of
+    genuinely empty cells over threshold in a single frame), each one
+    then paid for at full classifier cost -- a several-minute real run
+    ballooned past 30 minutes with no accuracy gain. So this test also
+    pins that a distant partial-vote cell, unconnected to any real tile,
+    is correctly invisible.
     """
     classifier = _train_tiny_classifier(tmp_path)
     reference = _blank_board_image()
@@ -226,20 +233,27 @@ def test_read_new_cells_voted_tiers_partial_occupancy_agreement_as_soft(tmp_path
         _place_tile(frame, 4, 0, "A", rng)
         frames.append(frame)
 
-    # Transient occupancy noise at (6, 6) -- a brightness shift, same
-    # pattern as test_read_new_cells_respects_custom_occupancy_thresholds
-    # -- present in only the FIRST frame of the window, absent from the
-    # other four (a brief, real, but not-tile-related disturbance).
-    x1, y1, x2, y2 = cell_bounds(6, 6)
-    shifted = np.clip(frames[0][y1:y2, x1:x2].astype(np.int16) + 60, 0, 255).astype(np.uint8)
-    frames[0][y1:y2, x1:x2] = shifted
+    # Partial-agreement noise at (4, 1) -- ADJACENT to the hard tile,
+    # standing in for the real RAGBOLT case (a genuine tile just past an
+    # already-detected run) -- and at (6, 6), far from anything real,
+    # standing in for ordinary board-wide compression/lighting noise.
+    # Both are brightness shifts (same pattern as
+    # test_read_new_cells_respects_custom_occupancy_thresholds), present
+    # in only the FIRST frame of the window, absent from the other four.
+    for row, col in ((4, 1), (6, 6)):
+        x1, y1, x2, y2 = cell_bounds(row, col)
+        shifted = np.clip(frames[0][y1:y2, x1:x2].astype(np.int16) + 60, 0, 255).astype(np.uint8)
+        frames[0][y1:y2, x1:x2] = shifted
 
     candidates = read_new_cells_voted(frames, IDENTITY_CALIBRATION, reference, classifier, board_before, top_k=2)
 
     by_coord = {cc.coord: cc for cc in candidates}
-    assert set(by_coord) == {(4, 0), (6, 6)}, "both the unanimous tile and the partial-agreement noise are returned"
+    assert set(by_coord) == {(4, 0), (4, 1)}, (
+        "the hard tile and its adjacent soft neighbor are returned; the distant, unconnected "
+        "partial-vote cell (6, 6) must NOT be -- that's the board-wide noise this bound exists to reject"
+    )
     assert by_coord[(4, 0)].is_soft is False, "unanimous across the whole window is HARD, same as before tiers existed"
-    assert by_coord[(6, 6)].is_soft is True, "agreement in only 1 of 5 frames is SOFT, not silently dropped"
+    assert by_coord[(4, 1)].is_soft is True, "partial agreement adjacent to a HARD cell is SOFT, not silently dropped"
 
 
 def test_read_new_cells_voted_requires_at_least_one_frame(tmp_path):
