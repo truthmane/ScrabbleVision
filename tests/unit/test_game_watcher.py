@@ -110,7 +110,11 @@ def test_full_sequence_places_a_tile_and_auto_publishes(tmp_path):
     watcher.observe_board_frame(_blank_board_image(), player_id="p1")  # arbitrary motion frame stand-in
     placed = _blank_board_image()
     _place_tile(placed, *CENTER, "A", rng)
-    events = [watcher.observe_board_frame(placed.copy(), player_id="p1") for _ in range(3)]
+    # 4, not 3: a placement is only committed once the same set of new
+    # cells is confirmed by a SECOND independent settled observation (see
+    # GameWatcher.__init__'s _pending_new_cells docstring) -- the 3rd call
+    # is the first sighting, the 4th confirms it's stopped growing.
+    events = [watcher.observe_board_frame(placed.copy(), player_id="p1") for _ in range(4)]
 
     final = events[-1]
     assert final.state == WatcherState.APPLIED
@@ -142,7 +146,11 @@ def test_low_confidence_routes_to_operator_and_does_not_advance_board(tmp_path):
 
     placed = _blank_board_image()
     _place_tile(placed, *CENTER, "A", rng)
-    events = [watcher.observe_board_frame(placed.copy(), player_id="p1") for _ in range(3)]
+    # 4, not 3: a placement is only committed once the same set of new
+    # cells is confirmed by a SECOND independent settled observation (see
+    # GameWatcher.__init__'s _pending_new_cells docstring) -- the 3rd call
+    # is the first sighting, the 4th confirms it's stopped growing.
+    events = [watcher.observe_board_frame(placed.copy(), player_id="p1") for _ in range(4)]
 
     final = events[-1]
     assert final.needs_operator is True
@@ -161,7 +169,11 @@ def test_detected_blank_always_needs_operator_even_in_autonomous_mode(tmp_path):
 
     placed = _blank_board_image()
     _place_tile(placed, *CENTER, None, rng)  # a blank tile
-    events = [watcher.observe_board_frame(placed.copy(), player_id="p1") for _ in range(3)]
+    # 4, not 3: a placement is only committed once the same set of new
+    # cells is confirmed by a SECOND independent settled observation (see
+    # GameWatcher.__init__'s _pending_new_cells docstring) -- the 3rd call
+    # is the first sighting, the 4th confirms it's stopped growing.
+    events = [watcher.observe_board_frame(placed.copy(), player_id="p1") for _ in range(4)]
 
     final = events[-1]
     assert final.needs_operator is True
@@ -182,12 +194,57 @@ def test_invalid_placement_routes_to_operator(tmp_path):
     placed = _blank_board_image()
     _place_tile(placed, 0, 0, "A", rng)
     _place_tile(placed, 10, 10, "N", rng)
-    events = [watcher.observe_board_frame(placed.copy(), player_id="p1") for _ in range(3)]
+    # 4, not 3: a placement is only committed once the same set of new
+    # cells is confirmed by a SECOND independent settled observation (see
+    # GameWatcher.__init__'s _pending_new_cells docstring) -- the 3rd call
+    # is the first sighting, the 4th confirms it's stopped growing.
+    events = [watcher.observe_board_frame(placed.copy(), player_id="p1") for _ in range(4)]
 
     final = events[-1]
     assert final.needs_operator is True
     assert final.reason is not None
     assert watcher.board.is_blank_board()
+
+
+def test_partial_placement_is_not_committed_until_confirmed_stable(tmp_path):
+    """Regression test for the exact failure running this against a real,
+    complete game found: a player who places part of a multi-tile word,
+    then pauses to think (fully satisfying "hands not moving" while
+    genuinely mid-turn), must not have that partial placement committed
+    as if it were the whole move. This is exactly what split one real
+    move ("HUIA") into two separate detected turns, attributed to two
+    different players, when GameWatcher was run end-to-end against a full
+    real WESPA Word Wars game.
+    """
+    classifier = _train_tiny_classifier(tmp_path)
+    watcher = _make_watcher(classifier, mode=PublishMode.AUTONOMOUS)
+    rng = random.Random(9)
+
+    empty = _blank_board_image()
+    _settle(watcher, empty, "p1")
+
+    # Player places 2 of what will eventually be a 3-tile word, then
+    # pauses -- 3 identical frames is exactly enough for one settled
+    # sighting, not (yet) a confirming second one.
+    partial = _blank_board_image()
+    _place_tile(partial, 7, 6, "C", rng)
+    _place_tile(partial, 7, 7, "A", rng)
+    partial_event = _settle(watcher, partial, "p1", count=3)
+
+    assert partial_event.scored_move is None, "a single sighting must never commit on its own"
+    assert watcher.board.is_blank_board()
+    assert watcher.turn_number == 0
+
+    # Player resumes (hand re-enters the shot, breaking stillness, then
+    # leaves again) and places the 3rd tile, completing the real word.
+    _disrupt(watcher, "p1")
+    full = partial.copy()
+    _place_tile(full, 7, 8, "T", rng)
+    final = _settle(watcher, full, "p1")
+
+    assert final.state == WatcherState.APPLIED
+    assert set(final.scored_move.candidate.new_cells) == {(7, 6), (7, 7), (7, 8)}
+    assert watcher.turn_number == 1
 
 
 class _FakeRackDetector:
@@ -277,7 +334,7 @@ def test_record_rack_without_detector_raises(tmp_path):
         watcher.record_rack("p1", np.zeros((150, 900, 3), dtype=np.uint8))
 
 
-def _settle(watcher, frame, player_id, count=3):
+def _settle(watcher, frame, player_id, count=4):
     event = None
     for _ in range(count):
         event = watcher.observe_board_frame(frame.copy(), player_id=player_id)
@@ -406,7 +463,11 @@ def test_delegated_mode_auto_publish_applies_to_the_session_not_a_separate_board
 
     placed = _blank_board_image()
     _place_tile(placed, *CENTER, "A", rng)
-    events = [watcher.observe_board_frame(placed.copy(), player_id="p1") for _ in range(3)]
+    # 4, not 3: a placement is only committed once the same set of new
+    # cells is confirmed by a SECOND independent settled observation (see
+    # GameWatcher.__init__'s _pending_new_cells docstring) -- the 3rd call
+    # is the first sighting, the 4th confirms it's stopped growing.
+    events = [watcher.observe_board_frame(placed.copy(), player_id="p1") for _ in range(4)]
 
     final = events[-1]
     assert final.needs_operator is False
@@ -436,7 +497,11 @@ def test_delegated_mode_low_confidence_becomes_a_real_pending_move_in_the_sessio
 
     placed = _blank_board_image()
     _place_tile(placed, *CENTER, "A", rng)
-    events = [watcher.observe_board_frame(placed.copy(), player_id="p1") for _ in range(3)]
+    # 4, not 3: a placement is only committed once the same set of new
+    # cells is confirmed by a SECOND independent settled observation (see
+    # GameWatcher.__init__'s _pending_new_cells docstring) -- the 3rd call
+    # is the first sighting, the 4th confirms it's stopped growing.
+    events = [watcher.observe_board_frame(placed.copy(), player_id="p1") for _ in range(4)]
 
     final = events[-1]
     assert final.needs_operator is True

@@ -191,7 +191,11 @@ def test_watch_endpoint_drives_the_live_session_from_a_video(client, tmp_path, m
     _place_tile(placed, *CENTER, "A", rng)
     frames.append(reference.copy())
     frames.append(np.zeros_like(reference))
-    frames += [placed.copy() for _ in range(still_frame_count)]
+    # +1: a placement is only committed once the same set of new cells is
+    # confirmed by a SECOND independent settled observation (see
+    # GameWatcher's _pending_new_cells) -- still_frame_count identical
+    # frames only reaches the first sighting, one more confirms it.
+    frames += [placed.copy() for _ in range(still_frame_count + 1)]
 
     video_path = tmp_path / "test_game.mkv"
     _write_video(video_path, frames)

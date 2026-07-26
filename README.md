@@ -76,11 +76,39 @@ An ML-powered auto-annotator for livestreamed Scrabble games
   end-of-game detection to trigger it, and real examples of that line
   don't reduce to one obvious formula (see `notation.py`'s module
   docstring), so it's left honestly absent rather than guessed at.
-- **Not yet done**: this hasn't run against a *complete* real game
-  end-to-end (only short clips so far, now the next planned validation
-  step); cross-camera synchronization between a board camera and rack
-  camera(s); batching classifier calls for real per-frame speed (currently
-  ~5s/settled-frame on CPU, dominated by repeated single-image inference
-  on occupied cells); the GCG end-of-game bonus/penalty line above. See
-  `game_watcher.py`'s and `run_watcher.py`'s module docstrings for the
-  exact scope lines.
+- **Ran against a complete real game end-to-end for the first time, and
+  fixed the real bug it found.** Downloaded a full ~37-minute WESPA
+  Word Wars game (Game 1 of the same broadcast) via `yt-dlp` and ran it
+  through `run_watcher.py`. Two operational findings along the way, both
+  resolved: the CLI's default confidence-gated mode never advances the
+  board in an unattended run (real single-frame confidence essentially
+  never clears 0.9, even after temporal voting -- voting fixes
+  frame-to-frame noise, not the classifier's genuine per-crop
+  uncertainty on a clean static tile), fixed by using `--mode autonomous`
+  for offline validation; and the structural blank-tile check (correct
+  and unconditional by design) has no automated resolution path in an
+  unattended run, handled with a validation-only fallback to the
+  classifier's best non-blank guess.
+  With those out of the way, the run surfaced a real, previously-unknown
+  architectural bug: **a settled read was committed the moment it was
+  first seen**, so a player who placed part of a multi-tile word and
+  then paused to think -- fully satisfying "hands not moving" while
+  genuinely mid-turn -- got that partial placement committed as if it
+  were the whole move. This is exactly what split one real move ("HUIA")
+  into two turns attributed to two different players, and later caused
+  the detector to permanently jam once enough such fragments piled up
+  into a diff too scattered to validate as a legal placement.
+  **Fixed** in `game_watcher.py`: a settled read is now only committed
+  once the *identical* set of new-cell coordinates is confirmed by a
+  second, independent settled observation -- a player still placing
+  tiles will show a growing/different set on the next read and correctly
+  keep waiting, while a genuinely finished turn re-confirms itself
+  immediately. Covered by a new regression test that reproduces the
+  exact partial-placement scenario. 227 tests passing (was 226).
+- **Not yet done**: a second full-game run with this fix hasn't been
+  completed yet (the fix was found and applied mid-run); cross-camera
+  synchronization between a board camera and rack camera(s); batching
+  classifier calls for real per-frame speed (currently ~5s/settled-frame
+  on CPU, dominated by repeated single-image inference on occupied
+  cells); the GCG end-of-game bonus/penalty line. See `game_watcher.py`'s
+  and `run_watcher.py`'s module docstrings for the exact scope lines.

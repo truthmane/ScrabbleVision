@@ -91,7 +91,11 @@ def test_run_watcher_on_video_detects_a_play_and_alternates_players(tmp_path):
     _place_tile(placed, *CENTER, "A", rng)
     frames.append(reference.copy())  # a motion stand-in frame (differs from both settled states)
     frames.append(np.zeros_like(reference))
-    frames += [placed.copy() for _ in range(still_frame_count)]  # settle on the new placement
+    # +1: a placement is only committed once the same set of new cells is
+    # confirmed by a SECOND independent settled observation (see
+    # GameWatcher's _pending_new_cells) -- still_frame_count identical
+    # frames only reaches the first sighting, one more confirms it.
+    frames += [placed.copy() for _ in range(still_frame_count + 1)]  # settle on the new placement, twice
 
     video_path = tmp_path / "test_game.mkv"
     _write_video(video_path, frames)
