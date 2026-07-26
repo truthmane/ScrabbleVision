@@ -111,3 +111,50 @@ def cell_bounds(row: int, col: int) -> Tuple[int, int, int, int]:
 def crop_cell(rectified_image: np.ndarray, row: int, col: int) -> np.ndarray:
     x1, y1, x2, y2 = cell_bounds(row, col)
     return rectified_image[y1:y2, x1:x2]
+
+
+DEFAULT_OCCUPANCY_INSET_FRAC = 0.05
+"""Fraction of each cell edge trimmed by `crop_cell_inset` -- deliberately
+small (3px per edge of a 60px cell). A blank tile's rendered face carries
+essentially all of its edge-detectable signal at its own outer boundary
+(no glyph means no interior texture at all), and that boundary sits very
+close to the cell's own edge since a tile is rendered to fill the cell --
+measured directly against the synthetic renderer: a 15% inset collapsed
+`gradient` from ~240 to ~0 for a blank tile (its edge stroke fell entirely
+outside the crop) and left `diff` a hair's breadth under threshold,
+undetecting it outright. 5% keeps a comfortable margin on both signals
+across multiple sampled cells/seeds while still trimming some of the
+outermost grid-line/neighbor-bleed fringe. Not yet tuned against real
+footage the way `occupancy/detector.py`'s thresholds are; re-tune per
+venue alongside those, and re-verify against a real blank tile
+specifically before raising it further."""
+
+
+def crop_cell_inset(
+    rectified_image: np.ndarray, row: int, col: int, inset_frac: float = DEFAULT_OCCUPANCY_INSET_FRAC,
+) -> np.ndarray:
+    """Like `crop_cell`, but shrunk by `inset_frac` on every side --
+    **occupancy detection only** (`occupancy/detector.py`); never the
+    classifier path.
+
+    `crop_cell`'s full cell block includes the grid line and a sliver of
+    each neighboring cell/tile, exactly where a genuinely empty cell picks
+    up spurious diff/gradient signal from a neighbor's tile bleeding across
+    the boundary or the printed grid line itself -- plausibly the largest
+    remaining source of empty-cell occupancy noise. Trimming that border
+    before computing `occupancy_scores` should make a real tile's own
+    signal cleaner without touching the classifier at all.
+
+    Do **not** reuse this for classification: `crop_cell`'s full-cell
+    framing is the trained checkpoint's input distribution (see
+    `training/synth_render/tile_renderer.py`), and changing what the
+    classifier sees silently invalidates every held-out accuracy number in
+    `docs/classifier-accuracy-plan.md`. A classifier-side inset is a
+    retrain, shipped with `crop_inset_frac` recorded in the checkpoint
+    dict so `TileClassifierModel` can assert compatibility -- the same bug
+    class as the BGR/RGB and temperature-sign incidents already on record.
+    """
+    x1, y1, x2, y2 = cell_bounds(row, col)
+    dx = round((x2 - x1) * inset_frac)
+    dy = round((y2 - y1) * inset_frac)
+    return rectified_image[y1 + dy:y2 - dy, x1 + dx:x2 - dx]

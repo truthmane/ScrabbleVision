@@ -25,7 +25,7 @@ import cv2
 import numpy as np
 
 from autoscorer.gamelogic.board import BOARD_SIZE, Coord
-from autoscorer.perception.calibration.homography import crop_cell
+from autoscorer.perception.calibration.homography import crop_cell_inset
 
 ReferenceBoard = Union[np.ndarray, Sequence[np.ndarray]]
 
@@ -111,9 +111,13 @@ def detect_occupancy(
     occupancy: Dict[Coord, bool] = {}
     for row in range(BOARD_SIZE):
         for col in range(BOARD_SIZE):
-            current_cell = crop_cell(rectified_board, row, col)
+            # Inset, not the classifier's full-cell `crop_cell` -- see
+            # `crop_cell_inset`'s docstring: trims the grid line/neighbor
+            # bleed at the cell boundary before scoring, which never
+            # affects what the classifier itself is handed elsewhere.
+            current_cell = crop_cell_inset(rectified_board, row, col)
             occupancy[(row, col)] = all(
-                is_occupied(current_cell, crop_cell(reference, row, col), diff_threshold, gradient_threshold)
+                is_occupied(current_cell, crop_cell_inset(reference, row, col), diff_threshold, gradient_threshold)
                 for reference in references
             )
     return occupancy

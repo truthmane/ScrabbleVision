@@ -32,6 +32,15 @@ CLASSIFIER_BLANK_LABEL = "BLANK"
 class CellCandidates:
     coord: Coord
     candidates: List[Tuple[str, float]]  # (label, confidence), most likely first
+    is_soft: bool = False
+    """True if this cell's occupancy support was partial (not unanimous)
+    across a temporal-voting window -- see
+    `board_reader.read_new_cells_voted`'s HARD/SOFT tiers. Always False for
+    a single-frame read (`read_new_cells`/`read_board`, no window to
+    disagree across) or for a HARD cell (every frame in the window agreed).
+    `GameWatcher` uses this to keep soft cells out of ordinary confirmation/
+    clustering and route them through the soft-extension path in
+    `placement_search.py` instead."""
 
 
 def _pool_key(label: str) -> str:

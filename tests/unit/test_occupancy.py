@@ -53,6 +53,31 @@ def test_occupied_cells_detected_diff_from_empty_reference():
         assert occupancy[coord] is False
 
 
+def test_detect_occupancy_still_finds_a_blank_tile_through_the_inset_crop():
+    """Regression test for a real fragility WS3's occupancy-only inset
+    crop found: a blank tile's rendered face has no glyph, so essentially
+    all of its edge-detectable signal lives at its own outer boundary,
+    which sits very close to the cell's own edge (a tile is rendered to
+    fill the cell). Measured directly: a 15% inset collapsed `gradient`
+    from ~240 to ~0 for a blank tile (its edge fell entirely outside the
+    crop) and left `diff` a hair under threshold -- silently undetecting
+    it. `detect_occupancy` (unlike the lower-level `is_occupied` test
+    above, which is handed pre-cropped arrays and never exercises the
+    inset at all) must still catch a blank end-to-end through whatever
+    inset it uses internally.
+    """
+    reference = _blank_board_image()
+    current = reference.copy()
+    blank_cells = [(4, 0), (5, 7), (0, 0), (14, 14), (7, 7)]
+    for row, col in blank_cells:
+        _place_tile(current, row, col, None)
+
+    occupancy = detect_occupancy(current, reference)
+
+    for coord in blank_cells:
+        assert occupancy[coord] is True, f"blank tile at {coord} must still be detected occupied"
+
+
 def test_blank_tile_is_still_detected_as_occupied_despite_no_glyph():
     # A blank tile has no printed letter, but its physical presence still
     # changes the cell's texture/brightness relative to the bare board

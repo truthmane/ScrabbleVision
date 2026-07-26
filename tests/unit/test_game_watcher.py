@@ -451,6 +451,50 @@ def test_truncated_candidate_never_auto_publishes_even_at_high_confidence(tmp_pa
     assert watcher.board.is_blank_board(), "a forced-operator candidate must not apply to the board"
 
 
+def test_a_soft_cell_extends_an_already_confirmed_hard_run_and_forces_operator_review(tmp_path, monkeypatch):
+    """WS3: a cell with only partial (not unanimous) occupancy support
+    across a settled window -- `read_new_cells_voted`'s SOFT tier, e.g.
+    the real WESPA "RAGBOLT" T that crossed the occupancy threshold in
+    only some of its window's frames -- must never anchor a placement on
+    its own, but should still be tried as an optional in-line extension of
+    an already-confirmed HARD run (`self._soft_cells`,
+    `placement_search.enumerate_candidate_placements`). Scripts
+    `read_new_cells_voted`'s return directly (rather than constructing
+    pixels with a borderline diff score) so the test pins the *wiring*
+    (support tier -> `_soft_cells` -> extension -> forced operator review)
+    without depending on fragile threshold-crossing numerics.
+    """
+    from autoscorer.gamelogic.movedetect.constraint_decoder import CellCandidates
+
+    classifier = _train_tiny_classifier(tmp_path)
+    watcher = _make_watcher(classifier, mode=PublishMode.AUTONOMOUS)
+
+    hard_only = [
+        CellCandidates(coord=(7, 6), candidates=[("A", 0.99)], is_soft=False),
+        CellCandidates(coord=(7, 7), candidates=[("N", 0.99)], is_soft=False),
+    ]
+    # Second observation: the same two HARD cells (confirming them), plus
+    # a third, SOFT cell in line with them -- standing in for a real tile
+    # whose occupancy signal only cleared threshold in some of this
+    # window's frames.
+    hard_plus_soft = hard_only + [
+        CellCandidates(coord=(7, 8), candidates=[("T", 0.9)], is_soft=True),
+    ]
+    calls = iter([hard_only, hard_plus_soft])
+    monkeypatch.setattr(gw_module, "read_new_cells_voted", lambda *a, **k: next(calls))
+
+    frame = _blank_board_image()
+    events = [watcher.observe_board_frame(frame.copy(), player_id="p1") for _ in range(4)]
+
+    final = events[-1]
+    assert final.scored_move is not None
+    assert final.scored_move.candidate.new_cells == ((7, 6), (7, 7), (7, 8)), (
+        "the longer, soft-extended reading (ANT) must be the one attempted, not the bare HARD pair (AN)"
+    )
+    assert final.needs_operator is True, "a soft-extended commit always needs operator review, any confidence"
+    assert watcher.board.is_blank_board(), "an operator-pending candidate must not apply to the board yet"
+
+
 def test_watchdog_emits_a_stalled_event_after_repeated_failures(tmp_path, monkeypatch):
     """After enough consecutive failed observations, a `STALLED` watchdog
     event fires as a backstop beyond per-cell quarantine alone -- this is

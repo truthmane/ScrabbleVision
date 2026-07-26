@@ -320,11 +320,15 @@ class GameWatcher:
         self._quarantined_since: Dict[Coord, int] = {}  # coord -> observation_index it was quarantined
         self._observations_since_commit: int = 0
         self._soft_cells: frozenset = frozenset()
-        """Cells with partial (not unanimous) occupancy support across a
-        settled window -- populated once `board_reader` exposes per-cell
-        support tiers (WS3); always empty until then, which makes the
-        soft-cell-extension path in `placement_search` a guaranteed no-op
-        for now."""
+        """Cells with partial (not unanimous) occupancy support across the
+        most recently observed settled window (see
+        `read_new_cells_voted`'s HARD/SOFT tiers) -- refreshed on every
+        `observe_board_frame` call, never accumulated across calls. Used
+        only as optional in-line extension material for an already-
+        confirmed HARD run (`placement_search.enumerate_candidate_placements`'s
+        `soft_cells` parameter); a soft cell never becomes part of
+        `_confirmed_cells` in its own right, so it can never anchor or
+        complete a placement on its own, only extend one."""
 
     @property
     def board(self) -> BoardState:
@@ -449,7 +453,17 @@ class GameWatcher:
             self._last_candidate_cells = frozenset()
             return WatcherEvent(state=self.state)
 
-        current_cells = frozenset(cc.coord for cc in candidates)
+        # SOFT cells (partial, not unanimous, occupancy support -- see
+        # `read_new_cells_voted`) are deliberately excluded from
+        # `current_cells`: they never enter ordinary per-cell confirmation
+        # or clustering, only `self._soft_cells`, which
+        # `enumerate_candidate_placements` may use to extend an
+        # already-confirmed HARD run by one adjacent in-line cell. This
+        # keeps every HARD-only code path below (confirmation, clustering,
+        # quarantine) byte-for-byte the same as before support tiers
+        # existed -- a SOFT cell can add to a placement, never anchor one.
+        current_cells = frozenset(cc.coord for cc in candidates if not cc.is_soft)
+        self._soft_cells = frozenset(cc.coord for cc in candidates if cc.is_soft)
         newly_confirmed = current_cells & self._last_candidate_cells
         # Intersecting with current_cells means a cell that stops
         # appearing (a marginal one that turned out not to be real, or a
@@ -506,13 +520,23 @@ class GameWatcher:
         attempted_anything = False
 
         for cluster in ready_clusters:
-            # Rank descending by cell count first (the true placement is
-            # always a superset of every truncation of itself, so whenever
-            # every real cell is confirmed, the truth wins outright before
-            # any other tiebreak matters -- see placement_search.py), then
-            # a stable, deterministic tiebreak. (A lexicon-validity and
-            # decoded log-probability tiebreak are added once WS2's real
-            # lexicon exists to rank against.)
+            # Rank descending by cell count first, still with no lexicon
+            # tiebreak, even though WS2's real lexicon now exists -- cell
+            # count must stay primary because the true placement is always
+            # a superset of every truncation of itself, phonies included:
+            # ranking a valid-but-shorter reading ahead of a longer phony
+            # would silently prefer the wrong one (see placement_search.py
+            # and the module docstring's phonies-are-legal constraint).
+            # This is also what makes a soft-extended candidate (always
+            # one cell longer than its un-extended HARD version -- see
+            # `_soft_cells` above) get tried FIRST: if the extra cell is a
+            # genuine tile, decoding and validation succeed and it commits
+            # (always `needs_operator=True`, since `used_soft_cells` forces
+            # that below); if the extension is spurious, one of those
+            # checks is the only thing standing between it and wrongly
+            # winning over the correct, un-extended reading -- the same
+            # residual risk WS1 already accepts for truncations, bounded
+            # the same way (never auto-published).
             ranked = sorted(
                 enumerate_candidate_placements(cluster, self.board, self._soft_cells),
                 key=lambda c: (-len(c.cells), sorted(c.cells)),

@@ -6,13 +6,16 @@ import cv2
 import numpy as np
 
 from autoscorer.perception.calibration.homography import (
+    CANONICAL_CELL_PX,
     CANONICAL_SIZE,
     CORNER_MARKER_IDS,
+    DEFAULT_OCCUPANCY_INSET_FRAC,
     ARUCO_DICTIONARY,
     calibrate_from_aruco,
     calibrate_from_corners,
     cell_bounds,
     crop_cell,
+    crop_cell_inset,
 )
 
 
@@ -55,6 +58,23 @@ def test_calibrate_from_corners_recovers_cell_content_through_a_perspective_warp
     center = red_crop[10:-10, 10:-10]
     assert np.mean(center[:, :, 2]) > 200  # strongly red channel
     assert np.mean(center[:, :, 1]) < 60   # weak green/blue -> not white
+
+
+def test_crop_cell_inset_is_smaller_than_crop_cell_and_centered_within_it():
+    # WS3: occupancy detection uses crop_cell_inset instead of crop_cell to
+    # avoid the grid-line/neighbor-bleed border that sits at the edge of
+    # every full-cell crop -- pin the geometry so a future change can't
+    # silently widen the inset back out to zero or drift off-center.
+    image = np.arange(CANONICAL_SIZE * CANONICAL_SIZE * 3, dtype=np.uint8).reshape(
+        CANONICAL_SIZE, CANONICAL_SIZE, 3
+    )
+    full = crop_cell(image, 3, 4)
+    inset = crop_cell_inset(image, 3, 4)
+
+    trim = round(CANONICAL_CELL_PX * DEFAULT_OCCUPANCY_INSET_FRAC)
+    assert full.shape == (CANONICAL_CELL_PX, CANONICAL_CELL_PX, 3)
+    assert inset.shape == (CANONICAL_CELL_PX - 2 * trim, CANONICAL_CELL_PX - 2 * trim, 3)
+    np.testing.assert_array_equal(inset, full[trim:-trim, trim:-trim])
 
 
 def test_calibrate_from_corners_rejects_wrong_number_of_points():

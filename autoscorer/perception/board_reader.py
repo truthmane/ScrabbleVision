@@ -146,17 +146,28 @@ def read_new_cells_voted(
     Assumes `raw_frames` all show the same board state -- that's what a
     stillness gate upstream (not built here; see the master architecture
     plan's move-detection state machine) is responsible for guaranteeing.
-    A cell only counts as occupied if EVERY frame in the window agrees --
-    found necessary running this against a complete real game: a hand
-    hovering near (not over) the board can be too small a change for the
-    coarse whole-frame stillness gate to reject, yet still nudge one
-    frame's diff score for a specific cell across the occupancy
-    threshold. Checking only the first frame (the original approach)
-    treated that one noisy frame as ground truth for the whole window;
-    real board footage showed cells flagged this way disagree across the
-    window's own frames, while a genuine tile reads occupied in all of
-    them, every time -- so requiring unanimous agreement filters out
-    exactly this noise without costing any real detections.
+
+    Each cell gets a **support tier** from its vote count across the
+    window rather than a hard unanimous AND: `votes == len(raw_frames)` is
+    HARD (identical to the original all-frames-agree behaviour -- see
+    `CellCandidates.is_soft`, False here); `0 < votes < len(raw_frames)` is
+    SOFT (`is_soft=True`). Unanimity was added because a hand hovering
+    near (not over) the board can be too small a change for the coarse
+    whole-frame stillness gate to reject, yet still nudge one frame's diff
+    score for a specific cell across the occupancy threshold -- checking
+    only the first frame treated that one noisy frame as ground truth for
+    the whole window, and requiring unanimous agreement fixed it. But real
+    full-game footage also showed the opposite failure: a genuine tile
+    (WESPA "RAGBOLT"'s final T) crossed the occupancy threshold in *some*
+    frames of its window but not all (diff 38.96 against a 38.0
+    threshold, a bare margin), so a hard AND silently dropped a real tile
+    rather than just noise. Both are real, so both get returned instead of
+    one being discarded outright: HARD cells behave exactly as before
+    (zero regression), while SOFT cells are still classified here (a
+    caller needs their `CellCandidates` to act on them at all) but are
+    left for `GameWatcher` to use only as an optional in-line extension of
+    an already-confirmed HARD run (`placement_search.py`'s `soft_cells`
+    parameter) -- never as an ordinary confirmed cell in their own right.
 
     See `read_board`'s docstring on `diff_threshold`/`gradient_threshold` --
     **getting these wrong here is expensive, not just inaccurate**: every
@@ -175,8 +186,9 @@ def read_new_cells_voted(
         detect_occupancy(rectified, reference_board, diff_threshold, gradient_threshold)
         for rectified in rectified_frames
     ]
-    occupancy = {
-        coord: all(occ[coord] for occ in per_frame_occupancy)
+    num_frames = len(rectified_frames)
+    votes = {
+        coord: sum(1 for occ in per_frame_occupancy if occ[coord])
         for coord in per_frame_occupancy[0]
     }
 
@@ -184,7 +196,7 @@ def read_new_cells_voted(
         (row, col)
         for row in range(BOARD_SIZE)
         for col in range(BOARD_SIZE)
-        if occupancy[(row, col)] and board_before.is_empty((row, col))
+        if votes[(row, col)] > 0 and board_before.is_empty((row, col))
     ]
     if not new_cells:
         return []
@@ -192,7 +204,11 @@ def read_new_cells_voted(
     # One batched forward pass for every (cell, frame) crop instead of a
     # separate classifier call each -- mathematically identical results
     # (see TileClassifierModel.predict_topk_batch's docstring), just
-    # sharply fewer, larger forward passes.
+    # sharply fewer, larger forward passes. Every frame in the window is
+    # classified regardless of that frame's own vote -- a SOFT cell's
+    # occupancy *score* fluctuated near threshold, but the physical scene
+    # (tile or no tile) is the same settled moment in every frame, so
+    # there's no basis to exclude any frame's crop from the vote.
     crops = [
         cv2.cvtColor(crop_cell(rectified, row, col), cv2.COLOR_BGR2RGB)
         for (row, col) in new_cells
@@ -201,11 +217,10 @@ def read_new_cells_voted(
     all_candidates = classifier.predict_topk_batch(crops, k=num_classes)
 
     results = []
-    num_frames = len(rectified_frames)
     for i, coord in enumerate(new_cells):
         per_frame_candidates = all_candidates[i * num_frames:(i + 1) * num_frames]
         voted = temporal_vote(per_frame_candidates)[:top_k]
-        results.append(CellCandidates(coord=coord, candidates=voted))
+        results.append(CellCandidates(coord=coord, candidates=voted, is_soft=votes[coord] < num_frames))
     return results
 
 

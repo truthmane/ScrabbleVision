@@ -190,20 +190,29 @@ def test_read_new_cells_voted_outvotes_a_single_bad_frame(tmp_path):
     cc = candidates[0]
     assert cc.coord == (4, 0)
     assert cc.candidates[0][0] == "A"
+    assert cc.is_soft is False, "occupied in every frame of the window is HARD"
 
 
-def test_read_new_cells_voted_requires_unanimous_occupancy_across_the_whole_window(tmp_path):
+def test_read_new_cells_voted_tiers_partial_occupancy_agreement_as_soft(tmp_path):
     """Regression test for a real bug running this against a complete real
     game found: a hand hovering near (not over) the board can be too small
     a change for the stillness gate's coarse whole-frame motion check to
     reject, yet still nudge one frame's occupancy signal for a specific
     cell over threshold. Deciding occupancy from a single frame (this
     function's original behavior) treats that one noisy frame as ground
-    truth for the whole window; real footage showed cells flagged this way
-    never agree across the window's other frames, while a genuine tile
-    reads occupied in every frame, every time -- so requiring unanimous
-    agreement filters out exactly this noise without losing real
-    detections (see board_reader.py's read_new_cells_voted docstring).
+    truth for the whole window.
+
+    A hard unanimous-AND used to discard this noise entirely -- but a
+    later real-game finding (WESPA "RAGBOLT"'s final T, which crossed
+    threshold in only some of its window's frames) showed a genuine tile
+    can fail to reach unanimous agreement too, so an outright hard AND
+    silently drops real detections along with real noise. Support tiers
+    keep both cases visible instead of collapsing them to the same
+    boolean: a cell every frame agrees on is HARD (`is_soft=False`,
+    unchanged from the original behavior); a cell only some frames agree
+    on is SOFT (`is_soft=True`) -- present in the result, but never
+    trusted as an ordinary confirmed cell by `GameWatcher` (see
+    `_soft_cells` there), only as optional in-line extension material.
     """
     classifier = _train_tiny_classifier(tmp_path)
     reference = _blank_board_image()
@@ -227,8 +236,10 @@ def test_read_new_cells_voted_requires_unanimous_occupancy_across_the_whole_wind
 
     candidates = read_new_cells_voted(frames, IDENTITY_CALIBRATION, reference, classifier, board_before, top_k=2)
 
-    coords = {cc.coord for cc in candidates}
-    assert coords == {(4, 0)}, "noise present in only one window frame must not be treated as a real cell"
+    by_coord = {cc.coord: cc for cc in candidates}
+    assert set(by_coord) == {(4, 0), (6, 6)}, "both the unanimous tile and the partial-agreement noise are returned"
+    assert by_coord[(4, 0)].is_soft is False, "unanimous across the whole window is HARD, same as before tiers existed"
+    assert by_coord[(6, 6)].is_soft is True, "agreement in only 1 of 5 frames is SOFT, not silently dropped"
 
 
 def test_read_new_cells_voted_requires_at_least_one_frame(tmp_path):
