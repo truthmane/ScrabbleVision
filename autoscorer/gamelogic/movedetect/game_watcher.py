@@ -109,17 +109,26 @@ def _rack_multiset(tiles: Sequence[Tile]) -> Counter:
     return Counter((tile.letter, tile.is_blank) for tile in tiles)
 
 
-def _cluster_cells(cells: frozenset) -> List[frozenset]:
-    """Groups new-cell coordinates into orthogonally-connected clusters.
+def _cluster_cells(cells: frozenset, board_before: BoardState) -> List[frozenset]:
+    """Groups new-cell coordinates into clusters connected through
+    contiguous occupied cells.
 
-    A single word's tiles are always contiguous; two cells that are new
-    at the same time but nowhere near each other belong to two different
-    (possibly not-yet-finished) turns, not one scattered, illegal
-    placement. Needed because `board_before` can genuinely have more than
-    one turn's worth of unaccounted-for tiles at once -- e.g. a slow
-    multi-tile word still being placed in one part of the board while a
-    separate, unrelated cell elsewhere is also new -- and lumping them
-    into a single set would never validate as one legal line.
+    A single word's new tiles aren't always directly adjacent to each
+    OTHER -- a play can hook through an existing tile in the middle (e.g.
+    "ARB.RIZE", where the "." is a letter already on the board), which
+    would otherwise split one legal word's new cells into two groups that
+    never touch. Two new cells belong to the same cluster if they're
+    reachable through a straight run of occupied cells (new or already on
+    `board_before`) with no empty gap -- the same notion of "connected"
+    `word_resolver.run_through`/`validate_placement` already use, just
+    computed before any of these cells have actually been placed.
+
+    Clustering still matters in general: `board_before` can genuinely
+    have more than one turn's worth of unaccounted-for tiles at once --
+    e.g. a slow multi-tile word still being placed in one part of the
+    board while a separate, unrelated cell elsewhere is also new -- and
+    lumping unrelated cells into a single set would never validate as one
+    legal line.
     """
     remaining = set(cells)
     clusters: List[frozenset] = []
@@ -130,11 +139,17 @@ def _cluster_cells(cells: frozenset) -> List[frozenset]:
         remaining.discard(seed)
         while frontier:
             r, c = frontier.pop()
-            for neighbor in ((r + 1, c), (r - 1, c), (r, c + 1), (r, c - 1)):
-                if neighbor in remaining:
-                    remaining.discard(neighbor)
-                    cluster.add(neighbor)
-                    frontier.append(neighbor)
+            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nr, nc = r + dr, c + dc
+                # Walk through a run of already-occupied cells (old tiles
+                # this play hooks through) to find the next new cell in
+                # this direction, if any.
+                while (nr, nc) not in cells and board_before.get((nr, nc)) is not None:
+                    nr, nc = nr + dr, nc + dc
+                if (nr, nc) in remaining:
+                    remaining.discard((nr, nc))
+                    cluster.add((nr, nc))
+                    frontier.append((nr, nc))
         clusters.append(frozenset(cluster))
     return clusters
 
@@ -294,7 +309,7 @@ class GameWatcher:
         # exactly as confirmed as they are now and get picked up (now
         # against an updated board_before) on the next call.
         ready_cluster = next(
-            (cluster for cluster in _cluster_cells(current_cells) if cluster and cluster <= self._confirmed_cells),
+            (cluster for cluster in _cluster_cells(current_cells, self.board) if cluster and cluster <= self._confirmed_cells),
             None,
         )
         if ready_cluster is None:

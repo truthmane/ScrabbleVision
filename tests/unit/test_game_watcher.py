@@ -290,6 +290,37 @@ def test_a_marginal_cell_that_disappears_does_not_block_a_stable_placement(tmp_p
     assert watcher.turn_number == 1
 
 
+def test_new_cells_hooking_through_an_existing_tile_cluster_together(tmp_path):
+    """Regression test for a bug in the clustering fix itself, found
+    immediately on the next real-game re-run: clustering only grouped new
+    cells that were directly adjacent to EACH OTHER, which splits a single
+    real word into two separate clusters whenever it hooks through a
+    letter already on the board (exactly the real WESPA move
+    "ARB.RIZE", where the "." is a pre-existing tile) -- this fed one
+    legitimate 7-cell bingo back as two separate, smaller turns instead of
+    the one real turn it was. Two new cells must cluster together if
+    they're connected through a straight run of already-occupied cells
+    (old or new), not only through other new cells.
+    """
+    classifier = _train_tiny_classifier(tmp_path)
+    watcher = _make_watcher(classifier, mode=PublishMode.AUTONOMOUS)
+    rng = random.Random(23)
+
+    # An existing tile sits in the middle of the word this turn hooks
+    # through -- the new cells on either side of it are not adjacent to
+    # each other at all.
+    watcher._board = BoardState({(7, 7): Tile("R")})
+
+    frame = _blank_board_image()
+    for col, letter in [(5, "A"), (6, "B"), (8, "I"), (9, "Z")]:
+        _place_tile(frame, 7, col, letter, rng)
+
+    final = _settle(watcher, frame, "p1")
+
+    assert final.state == WatcherState.APPLIED
+    assert set(final.scored_move.candidate.new_cells) == {(7, 5), (7, 6), (7, 8), (7, 9)}
+
+
 def test_two_disconnected_confirmed_clusters_commit_separately_not_merged(tmp_path):
     """Regression test for a third real failure found running this
     against a complete real game: board_before can genuinely have more

@@ -158,7 +158,18 @@ An ML-powered auto-annotator for livestreamed Scrabble games
   two disconnected, independently-legal single-cell placements confirmed
   in the same observation, verifying they commit as two separate turns
   rather than one failed, merged one. 230 tests passing.
-- **Not yet done**: a fifth full-game run with all four fixes hasn't been
+  Re-ran a fifth time and the clustering fix itself had a bug, caught
+  immediately: it only grouped new cells adjacent to each OTHER, so a
+  real word hooking through an existing tile in the middle (the actual
+  WESPA move "ARB.RIZE" -- the "." is a pre-existing letter) got split
+  back into two separate turns instead of the one 7-cell bingo it really
+  was. **Fixed**: clustering now bridges through a run of already-
+  occupied cells (old or new), not just other new cells -- the same
+  notion of "connected" `validate_placement`/`word_resolver` already use.
+  New regression test: new cells on both sides of an existing middle
+  tile now correctly cluster as one. 231 tests passing (the same known
+  flaky test above, unrelated).
+- **Not yet done**: a sixth full-game run with all five fixes hasn't been
   completed yet; cross-camera synchronization between a board camera and
   rack camera(s); batching classifier calls for real per-frame speed
   (currently ~5s/settled-frame on CPU, dominated by repeated
