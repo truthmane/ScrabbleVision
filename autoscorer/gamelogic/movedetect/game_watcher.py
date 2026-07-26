@@ -265,9 +265,14 @@ class GameWatcher:
         # Confirmed: every cell in this reading has now been seen in (at
         # least) two consecutive settled observations -- the placement
         # has stopped growing, so it's safe to treat as a genuinely
-        # completed turn.
-        self._confirmed_cells = frozenset()
-        self._last_candidate_cells = frozenset()
+        # completed turn. Confirmation state is deliberately NOT cleared
+        # here yet -- only once we actually reach a scored outcome below.
+        # A confirmed set that fails validation/pool-check for an
+        # unrelated reason (e.g. one already-confirmed cell alongside a
+        # transient neighbor that made the combination briefly illegal)
+        # should stay confirmed for the next attempt, rather than forcing
+        # the whole two-observation wait to repeat from scratch every
+        # single time a transient neighbor spoils one retry.
         self.state = WatcherState.DIFF_COMPUTED
 
         decoded = decode_feasible_reading(candidates, self.board, list(self.racks.values()))
@@ -302,6 +307,11 @@ class GameWatcher:
                 state=self.state, confidence=min_confidence,
                 needs_operator=True, reason=f"pool invariant violated: {exc}",
             )
+
+        # Every check passed -- this reading is genuinely being acted on,
+        # so the next observation starts a fresh confirmation cycle.
+        self._confirmed_cells = frozenset()
+        self._last_candidate_cells = frozenset()
 
         if self.session is not None:
             return self._submit_play_via_session(decoded, player_id, min_confidence)
