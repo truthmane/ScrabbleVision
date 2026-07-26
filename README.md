@@ -121,10 +121,26 @@ An ML-powered auto-annotator for livestreamed Scrabble games
   trusting frame zero -- covered by a new regression test that reproduces
   a single noisy frame inside an otherwise-clean window. 228 tests
   passing.
-- **Not yet done**: a third full-game run with both fixes hasn't been
-  completed yet; cross-camera synchronization between a board camera and
-  rack camera(s); batching classifier calls for real per-frame speed
-  (currently ~5s/settled-frame on CPU, dominated by repeated
-  single-image inference on occupied cells); the GCG end-of-game
-  bonus/penalty line. See `game_watcher.py`'s and `run_watcher.py`'s
-  module docstrings for the exact scope lines.
+  Re-ran again with both fixes: got twice as far as any previous attempt
+  (cleanly through turns 1-9, past both former blockers) before hitting a
+  **third, narrower issue** -- one marginal/borderline-visibility cell
+  kept flickering in and out of an otherwise-stable reading indefinitely,
+  and the exact-set-equality confirmation check never fired while it was
+  unsettled, even though every other cell in the placement was solid.
+  **Fixed** by tracking confirmation per cell instead of on the whole
+  reading as one atomic set: a cell only needs to survive two consecutive
+  settled observations on its own, so a stable subset can commit without
+  waiting forever on one cell that never fully stabilizes, while a
+  genuinely new cell still has to reappear once before it's trusted.
+  Covered by a new regression test (a stable cell + a cell that appears
+  once then disappears, confirming the stable one still commits on its
+  own). 229 tests passing (one pre-existing flaky test in the tiny-
+  classifier-training suite unrelated to this change, confirmed by
+  re-running clean 4/4 times).
+- **Not yet done**: a fourth full-game run with all three fixes hasn't
+  been completed yet; cross-camera synchronization between a board
+  camera and rack camera(s); batching classifier calls for real
+  per-frame speed (currently ~5s/settled-frame on CPU, dominated by
+  repeated single-image inference on occupied cells); the GCG
+  end-of-game bonus/penalty line. See `game_watcher.py`'s and
+  `run_watcher.py`'s module docstrings for the exact scope lines.

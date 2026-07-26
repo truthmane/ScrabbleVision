@@ -247,6 +247,49 @@ def test_partial_placement_is_not_committed_until_confirmed_stable(tmp_path):
     assert watcher.turn_number == 1
 
 
+def test_a_marginal_cell_that_disappears_does_not_block_a_stable_placement(tmp_path):
+    """Regression test for a second real failure found running this
+    against a complete real game: after the first fix above (wait for a
+    cell to be seen twice), a single marginal/borderline-visibility cell
+    that kept flickering in and out of the reading indefinitely could
+    still block a perfectly stable *other* cell from ever committing,
+    since the old fix compared the whole candidate set for exact
+    equality. Confirmation is now tracked per cell instead: a cell that
+    stops appearing simply drops out of consideration rather than
+    permanently blocking everything else.
+    """
+    classifier = _train_tiny_classifier(tmp_path)
+    watcher = _make_watcher(classifier, mode=PublishMode.AUTONOMOUS)
+    rng = random.Random(15)
+
+    empty = _blank_board_image()
+    _settle(watcher, empty, "p1")
+
+    # Reading 1: just the real tile, first sighting.
+    stable_only = _blank_board_image()
+    _place_tile(stable_only, 7, 7, "A", rng)
+    reading1 = _settle(watcher, stable_only, "p1", count=3)
+    assert reading1.scored_move is None
+
+    # Reading 2: a second cell flickers into view alongside it (brand new,
+    # not yet confirmed).
+    _disrupt(watcher, "p1")
+    with_marginal = stable_only.copy()
+    _place_tile(with_marginal, 7, 8, "N", rng)
+    reading2 = _settle(watcher, with_marginal, "p1", count=3)
+    assert reading2.scored_move is None
+
+    # Reading 3: the marginal cell is gone again -- the real tile must
+    # still commit on its own, not hang forever waiting for (7, 8) to
+    # reconfirm.
+    _disrupt(watcher, "p1")
+    final = _settle(watcher, stable_only, "p1", count=3)
+
+    assert final.state == WatcherState.APPLIED
+    assert final.scored_move.candidate.new_cells == ((7, 7),)
+    assert watcher.turn_number == 1
+
+
 class _FakeRackDetector:
     def __init__(self, boxes):
         self._boxes = boxes

@@ -169,17 +169,27 @@ class GameWatcher:
         self.state = WatcherState.IDLE_STILL
         self._frame_buffer: List[np.ndarray] = []
         # A settled read is never committed the moment it's first seen --
-        # only once the identical set of new cells is seen again on a
-        # SEPARATE settled observation. A player who places part of a word,
-        # then pauses to think (fully satisfying "hands not moving" while
-        # genuinely mid-turn), would otherwise get that partial placement
-        # committed as if it were the whole move -- this is exactly what
-        # split one real move into two turns (see the "HUIA" fragmentation
-        # found running this against a real, complete game). Waiting for
-        # two independent reads to agree on the same cell *coordinates*
-        # (not the decoded letters, which can vary slightly frame to frame)
-        # is enough to distinguish "still placing tiles" from "done."
-        self._pending_new_cells: Optional[frozenset] = None
+        # only once a cell has appeared as a new candidate in two
+        # consecutive settled observations does it count as confirmed.
+        # A player who places part of a word, then pauses to think (fully
+        # satisfying "hands not moving" while genuinely mid-turn), would
+        # otherwise get that partial placement committed as if it were the
+        # whole move -- this is exactly what split one real move into two
+        # turns (see the "HUIA" fragmentation found running this against a
+        # real, complete game).
+        #
+        # Confirmation is tracked per CELL, not as one atomic set-equality
+        # check on the whole reading, because real footage also showed a
+        # single marginal/borderline-visibility tile can keep flickering
+        # in and out of the candidate set indefinitely -- an exact-set
+        # match would never fire while that one cell is unsettled, even
+        # though every other cell in the placement is rock solid. Tracking
+        # confirmation per cell lets a stable subset commit without
+        # waiting forever on a cell that never stabilizes, while a
+        # genuinely new cell still has to survive one full extra
+        # observation, same as before, before it's trusted.
+        self._confirmed_cells: frozenset = frozenset()
+        self._last_candidate_cells: frozenset = frozenset()
 
     @property
     def board(self) -> BoardState:
@@ -228,23 +238,36 @@ class GameWatcher:
             # this is what makes repeated observation of the same stable
             # moment harmless rather than something callers must guard
             # against themselves.
-            self._pending_new_cells = None
+            self._confirmed_cells = frozenset()
+            self._last_candidate_cells = frozenset()
             return WatcherEvent(state=self.state)
 
-        new_cell_set = frozenset(cc.coord for cc in candidates)
-        if new_cell_set != self._pending_new_cells:
-            # First time seeing this exact set of new cells -- could be a
-            # completed turn, or could be a player mid-placement who just
-            # happened to pause. Don't act on a single observation; wait to
-            # see the same cells again before treating it as final.
-            self._pending_new_cells = new_cell_set
+        current_cells = frozenset(cc.coord for cc in candidates)
+        newly_confirmed = current_cells & self._last_candidate_cells
+        # Intersecting with current_cells means a cell that stops
+        # appearing (a marginal one that turned out not to be real, or a
+        # transient blip) drops back out on its own -- it never blocks a
+        # stable subset from committing, and it isn't permanently baked in
+        # either.
+        self._confirmed_cells = (self._confirmed_cells | newly_confirmed) & current_cells
+        self._last_candidate_cells = current_cells
+
+        if current_cells != self._confirmed_cells:
+            # At least one cell in this reading is brand new (or hasn't
+            # yet survived a second independent look) -- could be a
+            # completed turn, or a player mid-placement who just happened
+            # to pause, or one cell whose visibility is still marginal.
+            # Don't act yet; every cell needs to reappear at least once
+            # before it's trusted.
             self.state = WatcherState.DIFF_COMPUTED
             return WatcherEvent(state=self.state)
 
-        # Confirmed: an independent, later settled observation saw the
-        # exact same set of new cells -- the placement has stopped
-        # growing, so it's safe to treat as a genuinely completed turn.
-        self._pending_new_cells = None
+        # Confirmed: every cell in this reading has now been seen in (at
+        # least) two consecutive settled observations -- the placement
+        # has stopped growing, so it's safe to treat as a genuinely
+        # completed turn.
+        self._confirmed_cells = frozenset()
+        self._last_candidate_cells = frozenset()
         self.state = WatcherState.DIFF_COMPUTED
 
         decoded = decode_feasible_reading(candidates, self.board, list(self.racks.values()))
