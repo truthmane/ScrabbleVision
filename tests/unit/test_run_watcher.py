@@ -118,6 +118,49 @@ def test_run_watcher_on_video_detects_a_play_and_alternates_players(tmp_path):
     assert not event.needs_operator
 
 
+def test_run_watcher_on_video_resolves_lexicon_from_venue_profile_or_override(tmp_path):
+    checkpoint_path = _train_tiny_classifier(tmp_path)
+    reference = _blank_board_image()
+    frames = [reference.copy() for _ in range(4)]
+    video_path = tmp_path / "empty.mkv"
+    _write_video(video_path, frames)
+    reference_path = tmp_path / "reference.png"
+    cv2.imwrite(str(reference_path), reference)
+    profile = VenueProfile(
+        name="lexicon_test_venue", corners=IDENTITY_CORNERS, still_frame_count=3,
+        reference_board_path=str(reference_path), lexicon=None,
+    )
+    save_venue_profile(profile, directory=tmp_path)
+
+    import autoscorer.perception.capture.run_watcher as run_watcher_module
+    original_loader = run_watcher_module.load_venue_profile
+    original_load_lexicon = run_watcher_module.load_lexicon
+    calls = []
+
+    def _spy_load_lexicon(name):
+        calls.append(name)
+        return original_load_lexicon()  # always the real, always-loadable vendored default
+
+    run_watcher_module.load_venue_profile = lambda name: original_loader(name, directory=tmp_path)
+    run_watcher_module.load_lexicon = _spy_load_lexicon
+    try:
+        run_watcher_on_video(
+            video_path, "lexicon_test_venue", checkpoint_path, "Alice", "Bob",
+            sample_fps=None, mode=PublishMode.AUTONOMOUS,
+        )
+        assert calls == [None]  # no override, profile.lexicon is None -> vendored default
+
+        calls.clear()
+        run_watcher_on_video(
+            video_path, "lexicon_test_venue", checkpoint_path, "Alice", "Bob",
+            sample_fps=None, mode=PublishMode.AUTONOMOUS, lexicon_name="some_override",
+        )
+        assert calls == ["some_override"]
+    finally:
+        run_watcher_module.load_venue_profile = original_loader
+        run_watcher_module.load_lexicon = original_load_lexicon
+
+
 def test_format_event_includes_score_and_status_for_a_play():
     from autoscorer.gamelogic.models import MoveCandidate, ScoredMove
     from autoscorer.gamelogic.movedetect.game_watcher import WatcherEvent, WatcherState

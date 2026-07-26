@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from autoscorer.api.session import GameSession
+from autoscorer.gamelogic.dictionary.lexicon import load_lexicon
 from autoscorer.gamelogic.movedetect.game_watcher import GameWatcher, WatcherEvent
 from autoscorer.gamelogic.models import MoveType
 from autoscorer.gamelogic.notation import format_square
@@ -89,6 +90,7 @@ def run_watcher_on_video(
     session: Optional[GameSession] = None,
     on_event=None,
     on_frame_event=None,
+    lexicon_name: Optional[str] = None,
 ) -> List[WatcherEvent]:
     """Runs `GameWatcher` against every sampled frame of `video_path`,
     alternating `player1_id`/`player2_id` after each PLAY-carrying event
@@ -118,9 +120,16 @@ def run_watcher_on_video(
     move-carrying filter, which is what a stall/health report needs (a
     permanently jammed watcher previously produced nothing at all for
     `on_event` to see).
+
+    `lexicon_name`, if given, overrides the venue profile's own
+    `lexicon` field (itself optional -- see `VenueProfile.lexicon`);
+    either way it's resolved via `load_lexicon`, which always returns
+    something loadable (falling back to the vendored default), never
+    `None` silently meaning "no lexicon at all" by omission.
     """
     profile = load_venue_profile(venue_name)
     classifier = TileClassifierModel(classifier_path, device=device)
+    lexicon = load_lexicon(lexicon_name or profile.lexicon)
 
     watcher_kwargs = dict(
         calibration=profile.calibration(),
@@ -130,6 +139,7 @@ def run_watcher_on_video(
         still_frame_count=profile.still_frame_count,
         occupancy_diff_threshold=profile.occupancy_diff_threshold,
         occupancy_gradient_threshold=profile.occupancy_gradient_threshold,
+        lexicon=lexicon,
     )
     if session is not None:
         watcher = GameWatcher(session=session, **watcher_kwargs)
@@ -182,6 +192,7 @@ def main() -> None:
     parser.add_argument("--confidence-threshold", type=float, default=0.9)
     parser.add_argument("--max-frames", type=int, default=None)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--lexicon", default=None, help="overrides the venue profile's own lexicon, if any")
     args = parser.parse_args()
 
     t0 = time.time()
@@ -189,6 +200,7 @@ def main() -> None:
         args.video_path, args.venue, args.classifier, args.player1, args.player2,
         sample_fps=args.sample_fps, mode=PUBLISH_MODES[args.mode],
         confidence_threshold=args.confidence_threshold, max_frames=args.max_frames, device=args.device,
+        lexicon_name=args.lexicon,
     )
     elapsed = time.time() - t0
 

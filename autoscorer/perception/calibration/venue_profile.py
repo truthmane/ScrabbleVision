@@ -73,6 +73,12 @@ class VenueProfile:
     reference_board_path: Optional[str] = None
     additional_reference_board_paths: Tuple[str, ...] = field(default_factory=tuple)
     notes: str = field(default="")
+    lexicon: Optional[str] = None
+    """Name or path resolved via `dictionary.lexicon.load_lexicon` --
+    e.g. a licensed CSW/NWL drop-in under `configs/lexicons/` for a real
+    tournament's actual dictionary. `None` (the default) means "use
+    whatever `load_lexicon` falls back to" (the vendored generic list),
+    not "no lexicon" -- the decoder always has one to rank against."""
 
     def calibration(self) -> BoardCalibration:
         return calibrate_from_corners(self.corners)
@@ -112,6 +118,7 @@ class VenueProfile:
             "reference_board_path": self.reference_board_path,
             "additional_reference_board_paths": list(self.additional_reference_board_paths),
             "notes": self.notes,
+            "lexicon": self.lexicon,
         }
 
     @staticmethod
@@ -129,6 +136,7 @@ class VenueProfile:
             reference_board_path=data.get("reference_board_path"),
             additional_reference_board_paths=tuple(data.get("additional_reference_board_paths", [])),
             notes=data.get("notes", ""),
+            lexicon=data.get("lexicon"),
         )
 
 

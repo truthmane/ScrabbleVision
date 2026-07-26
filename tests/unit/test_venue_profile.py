@@ -93,6 +93,36 @@ def test_load_reference_board_raises_when_path_not_set():
         profile.load_reference_board()
 
 
+def test_lexicon_defaults_to_none():
+    profile = _sample_profile()
+    assert profile.lexicon is None
+
+
+def test_lexicon_round_trips_through_save_and_load(tmp_path):
+    profile = VenueProfile(
+        name="csw_venue",
+        corners=((0.0, 0.0), (500.0, 0.0), (500.0, 500.0), (0.0, 500.0)),
+        lexicon="csw24",
+    )
+    save_venue_profile(profile, directory=tmp_path)
+    loaded = load_venue_profile("csw_venue", directory=tmp_path)
+    assert loaded.lexicon == "csw24"
+
+
+def test_a_saved_profile_without_a_lexicon_key_still_loads(tmp_path):
+    """Older saved profiles (including the committed
+    configs/venues/wespa_word_wars.json) predate this field -- loading
+    one must not require it."""
+    import json
+    profile = _sample_profile("legacy_venue")
+    data = profile.to_dict()
+    del data["lexicon"]
+    (tmp_path / "legacy_venue.json").write_text(json.dumps(data))
+
+    loaded = load_venue_profile("legacy_venue", directory=tmp_path)
+    assert loaded.lexicon is None
+
+
 def test_load_reference_board_raises_when_file_missing(tmp_path):
     profile = VenueProfile(
         name="test_venue",

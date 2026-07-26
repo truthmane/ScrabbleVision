@@ -19,6 +19,7 @@ from typing import Dict, List, Optional
 from autoscorer.eval.gcg_truth import load_truth_turns
 from autoscorer.eval.metrics import DetectedTurn, GameEvalReport, Provenance, StallInfo, build_report
 from autoscorer.gamelogic.board import BoardState, Coord, Tile
+from autoscorer.gamelogic.dictionary.lexicon import load_lexicon
 from autoscorer.gamelogic.models import MoveType
 from autoscorer.gamelogic.publish import PublishMode
 from autoscorer.perception.capture.run_watcher import PUBLISH_MODES, run_watcher_on_video
@@ -118,6 +119,7 @@ def run_and_evaluate(
         video_path, venue_name, classifier_path, player1_id, player2_id,
         sample_fps=sample_fps, mode=mode, confidence_threshold=confidence_threshold,
         max_frames=max_frames, device=device, on_event=on_event, on_frame_event=on_frame_event,
+        lexicon_name=lexicon_name,
     )
     _flush_stall()
     wall_clock = time.time() - t0
@@ -138,9 +140,10 @@ def run_and_evaluate(
     truth_replayed = replay_gcg_game(read_gcg_moves(gcg_path))
     truth_final_board = truth_replayed[-1].board_after if truth_replayed else BoardState()
 
+    resolved_lexicon = load_lexicon(lexicon_name)
     provenance = Provenance(
-        lexicon_name=lexicon_name,
-        lexicon_word_count=None,
+        lexicon_name=resolved_lexicon.name,
+        lexicon_word_count=resolved_lexicon.word_count,
         classifier_checkpoint=str(classifier_path),
         venue=venue_name,
         git_sha=_git_sha(),
@@ -188,7 +191,7 @@ def main() -> None:
     parser.add_argument("--confidence-threshold", type=float, default=0.9)
     parser.add_argument("--max-frames", type=int, default=None)
     parser.add_argument("--device", default="cpu")
-    parser.add_argument("--lexicon", default=None, help="reserved for WS2; recorded as provenance only for now")
+    parser.add_argument("--lexicon", default=None, help="name/path resolved via dictionary.lexicon.load_lexicon; defaults to the venue profile's own lexicon, or the vendored default")
     parser.add_argument("--baseline", type=Path, default=None, help="a previously committed report JSON to compare against")
     parser.add_argument("--json-out", type=Path, default=None, help="write the full report as JSON here")
     args = parser.parse_args()

@@ -9,9 +9,10 @@ a definitions source via the same interface.
 """
 from __future__ import annotations
 
-from typing import Dict, Optional, Protocol
+from typing import Dict, Optional, Protocol, runtime_checkable
 
 
+@runtime_checkable
 class DictionaryLookup(Protocol):
     def is_valid_word(self, word: str) -> bool: ...
 

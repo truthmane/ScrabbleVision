@@ -351,3 +351,76 @@ An ML-powered auto-annotator for livestreamed Scrabble games
   regression tests for candidate fallback, quarantine, truncation, the
   stall watchdog, and phony-word safety), one pre-existing flaky test
   documented as before, unrelated to any of this.
+- **Lexicon-constrained decoding (WS2).** `autoscorer/gamelogic/dictionary/lexicon.py`
+  loads a word list -- vendored default (ENABLE, public domain, 168,551
+  words after filtering) or a licensed override (`configs/lexicons/`,
+  gitignored, resolved via name/path/env var) -- as a plain `frozenset`
+  (a DAWG/GADDAG buys nothing here: the only queries are exact membership
+  and a 26-way blank-letter check, never rack-based move generation).
+  **Phonies are legal, scoring plays**, so the lexicon is a pure
+  re-ranker, never a filter: `autoscorer/gamelogic/movedetect/lexicon_decoder.py`'s
+  `decode_with_lexicon` is a position-ordered beam search over each
+  cell's full temporal-voted distribution, scored by pool feasibility
+  (reusing `constraint_decoder`'s machinery) plus how many of the words
+  the reading forms are real -- it can rank a phony above an in-lexicon
+  alternative, never substitute one, and always returns a reading (never
+  invents one, never drops a cell). `GameWatcher` gained an optional
+  `lexicon` parameter, wired through `run_watcher_on_video`/
+  `run_game_eval.py`'s `--lexicon` and `VenueProfile.lexicon`.
+
+  Caught two real bugs by testing, not by reasoning about the design in
+  the abstract: (1) beam truncation at each cell originally used only
+  the cross-word penalty accumulated so far, computing the *main* word's
+  lexicon check in a separate pass after the whole beam already finished
+  -- meaning the correct answer could get pruned before the score that
+  would have favored it was ever computed (a needed letter, ranked
+  alphabetically outside the beam width, silently vanished). (2) The
+  blank branch scored "maybe this is a blank" as a neutral 0 log-probability,
+  which is *always* better than any real, honestly-confident letter guess
+  (`log(confidence)` is always negative below 1.0) -- a single, cleanly
+  classified tile was losing every time to a low-confidence "it might be
+  a blank" interpretation. Both are now regression-tested directly.
+
+  **Measured, not guessed** (E1-E5, zero pixels, all 13 real GCG
+  fixtures, 302 real plays): **E1 coverage** -- 471 distinct words
+  formed; the vendored ENABLE default covers 79.4% (374/471), the real
+  licensed CSW24 list covers 99.8% (470/471, missing only `DORMENT`).
+  **E2 simulated-noise recovery** (corrupting each true label at the
+  deployed checkpoint's real confusion shape, p=0.72): cell accuracy is
+  roughly flat with or without a lexicon (73.3% raw either way), but
+  **per-move exact match improves substantially** -- 89/302 raw →
+  96/302 with ENABLE → **100/302 with CSW24** -- because a lexicon's
+  value shows up at the word level (every cell has to be simultaneously
+  right for a real word to form), not the per-cell average. **E3 blank
+  recovery**: pool-feasibility alone recovers 4/26 real blank letters
+  (15.4%); adding CSW24 recovers **13/26 (50.0%)**, with 2/26 genuinely
+  ambiguous (more than one letter keeps every word valid -- irreducibly
+  operator work). **E4 phony safety**: 0 violations across 3 corrupted
+  trials -- confirmed the lexicon never turns an already-correct
+  *evidenced* letter reading into a wrong one (blanks are excluded from
+  this specific check on purpose: a blank's true letter carries zero
+  raw evidence to begin with, so "correctly identified as blank" isn't
+  the same claim as "the letter guess was already right" -- that's what
+  E3 measures honestly, not this one). **E5 truncation/contamination**,
+  now against the real lexicon instead of a generic-dictionary stand-in:
+  of 1253 single-cell drops from real plays, 487 (38.9%) still pass pure
+  geometry, and 174 of those (13.9% of all drops) are also lexicon-valid
+  -- the lexicon filters roughly 6 in 7 of the geometrically-passable
+  truncations. Of 444 spurious one-cell-extended supersets, all 444
+  (100%) pass geometry, but only 13 (2.9%) are also lexicon-valid --
+  tighter than an earlier generic-list estimate (~11%), since a real
+  tournament dictionary, despite being broad, still rejects almost any
+  random letter appended to a real word.
+- **Confirmed against the real Game 1 broadcast, with the real CSW24
+  lexicon wired in (`--lexicon csw24`), not just synthetic corruption.**
+  Re-ran the same real video against the post-WS1 baseline:
+  `first_divergence_index` **3 → 7** (four more turns now match the real
+  GCG cleanly before anything diverges); `exact_score_matches` **6 → 9**;
+  `letter_accuracy` on correctly-located cells **72.4% → 87.3%**
+  (46/58 → 48/55); final board cells correct **50 → 56 of 95**;
+  `cell_f1_micro` **0.935 → 0.940** (no regression this time -- the
+  earlier accepted dip from WS1 alone has now partly reversed).
+  `longest_stall` stays at 3 (unaffected, as expected -- the lexicon
+  changes letter/word decoding, not turn detection). The CLI's own
+  regression check reports **no regressions vs. the WS1 baseline**.
+  Baseline JSON updated to this new, better state.

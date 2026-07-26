@@ -91,7 +91,9 @@ import numpy as np
 
 from autoscorer.api.session import GameSession
 from autoscorer.gamelogic.board import BOARD_SIZE, BoardState, Coord, Tile
-from autoscorer.gamelogic.movedetect.constraint_decoder import CellCandidates, CLASSIFIER_BLANK_LABEL, decode_feasible_reading
+from autoscorer.gamelogic.dictionary.lexicon import Lexicon
+from autoscorer.gamelogic.movedetect.constraint_decoder import CellCandidates, CLASSIFIER_BLANK_LABEL
+from autoscorer.gamelogic.movedetect.lexicon_decoder import decode_with_lexicon
 from autoscorer.gamelogic.movedetect.placement_search import (
     CandidatePlacement,
     _cluster_cells,
@@ -234,7 +236,14 @@ class GameWatcher:
         occupancy_diff_threshold: float = DEFAULT_DIFF_THRESHOLD,
         occupancy_gradient_threshold: float = DEFAULT_GRADIENT_THRESHOLD,
         adaptive_reference: bool = True,
+        lexicon: Optional[Lexicon] = None,
     ) -> None:
+        """`lexicon`, if given, re-ranks decoded readings (see
+        `lexicon_decoder.decode_with_lexicon`) -- it can never reject or
+        substitute a reading (phonies are legal, scoring plays), only
+        prefer one pool-feasible candidate over another when the words
+        it forms are real. `None` (the default) decodes by pool
+        feasibility and confidence alone, same as before this existed."""
         if session is None and publish_gateway is None:
             raise ValueError(
                 "GameWatcher needs either publish_gateway (standalone mode) or "
@@ -269,6 +278,7 @@ class GameWatcher:
         self.still_frame_count = still_frame_count
         self.occupancy_diff_threshold = occupancy_diff_threshold
         self.occupancy_gradient_threshold = occupancy_gradient_threshold
+        self.lexicon = lexicon
 
         self._board = BoardState()
         self._racks: Dict[str, List[Tile]] = {}
@@ -578,11 +588,21 @@ class GameWatcher:
         candidate instead of giving up on the whole observation.
         """
         attempted_cells = tuple(sorted(candidate.cells))
-        decoded = decode_feasible_reading(cell_candidates, self.board, list(self.racks.values()))
+        reading = decode_with_lexicon(cell_candidates, self.board, list(self.racks.values()), lexicon=self.lexicon)[0]
+        decoded = reading.labels
         conf_by_coord = {cc.coord: dict(cc.candidates) for cc in cell_candidates}
-        min_confidence = min(conf_by_coord[coord][label] for coord, label in decoded.items())
+        # A blank-resolved cell's chosen LETTER (e.g. "T") is usually not
+        # itself one of the classifier's own candidate labels for that
+        # cell -- the image carries no evidence for which letter a blank
+        # is, only that it's a blank at all. Fall back to the classifier's
+        # own BLANK confidence in that case; it's what genuinely reflects
+        # this cell's uncertainty.
+        min_confidence = min(
+            conf_by_coord[coord].get(label, conf_by_coord[coord].get(CLASSIFIER_BLANK_LABEL, 0.0))
+            for coord, label in decoded.items()
+        )
 
-        blank_coords = tuple(sorted(coord for coord, label in decoded.items() if label == CLASSIFIER_BLANK_LABEL))
+        blank_coords = tuple(sorted(reading.blank_cells))
         if blank_coords:
             # Attribute this failure only to the actual blank cell(s), not
             # every cell in the candidate -- a multi-cell word with one
@@ -593,6 +613,16 @@ class GameWatcher:
             # candidate. Once only the blanks are quarantined, the
             # remaining good cells can be re-tried (as their own, smaller
             # candidates) instead of the whole turn going silent.
+            #
+            # `decode_with_lexicon` (unlike the old `decode_feasible_reading`)
+            # already resolves a blank to a specific, pool-feasible, and
+            # (when a lexicon is given) word-consistent letter -- but
+            # this project's structural rule stands regardless: a blank's
+            # played letter is never trusted enough to auto-publish
+            # without an operator confirming it, no matter how the
+            # letter was arrived at. Using the resolved letter to pre-fill
+            # an operator's review UI is a real future improvement, not
+            # done here.
             return (
                 "a detected tile is a blank -- letter unknown until an operator confirms what it's played as",
                 blank_coords,
