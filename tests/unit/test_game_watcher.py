@@ -290,6 +290,50 @@ def test_a_marginal_cell_that_disappears_does_not_block_a_stable_placement(tmp_p
     assert watcher.turn_number == 1
 
 
+def test_reference_adapts_to_lighting_drift_in_still_empty_cells(tmp_path):
+    """Regression test for a fifth real issue found running this against
+    a complete real game: a single fixed reference photo can't track
+    lighting that keeps drifting over a long (30+ minute) broadcast -- a
+    screen region far in time from the reference's capture moment
+    developed a persistent false-positive occupancy diff, and no single
+    fixed reference point covered the whole game without the same
+    problem resurfacing elsewhere. GameWatcher now refreshes the
+    reference's still-unplayed cells from real frames as the game
+    progresses, so gradual drift gets absorbed before it ever crosses the
+    occupancy threshold.
+    """
+    classifier = _train_tiny_classifier(tmp_path)
+    watcher = _make_watcher(classifier, mode=PublishMode.AUTONOMOUS)
+
+    empty = _blank_board_image()
+    _settle(watcher, empty, "p1")
+
+    x1, y1, x2, y2 = cell_bounds(3, 3)
+
+    # First increment of lighting drift -- under the default occupancy
+    # threshold (25.0) on its own, so this cell stays correctly
+    # unoccupied and the reference should refresh to match it.
+    drifted_once = empty.copy()
+    drifted_once[y1:y2, x1:x2] = np.clip(
+        drifted_once[y1:y2, x1:x2].astype(np.int16) + 15, 0, 255
+    ).astype(np.uint8)
+    _settle(watcher, drifted_once, "p1")
+    assert watcher.board.is_blank_board(), "a moderate drift alone must not misread as a placement"
+
+    # A second, equal increment (now +30 from the ORIGINAL reference --
+    # enough to spuriously cross the threshold against an un-refreshed
+    # reference) should still read as empty, because the reference
+    # already caught up to the first increment.
+    drifted_twice = empty.copy()
+    drifted_twice[y1:y2, x1:x2] = np.clip(
+        drifted_twice[y1:y2, x1:x2].astype(np.int16) + 30, 0, 255
+    ).astype(np.uint8)
+    final = _settle(watcher, drifted_twice, "p1")
+
+    assert final.scored_move is None
+    assert watcher.board.is_blank_board(), "incremental drift the reference already tracked must not misread as a placement"
+
+
 def test_new_cells_hooking_through_an_existing_tile_cluster_together(tmp_path):
     """Regression test for a bug in the clustering fix itself, found
     immediately on the next real-game re-run: clustering only grouped new

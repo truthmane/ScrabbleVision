@@ -169,10 +169,32 @@ An ML-powered auto-annotator for livestreamed Scrabble games
   New regression test: new cells on both sides of an existing middle
   tile now correctly cluster as one. 231 tests passing (the same known
   flaky test above, unrelated).
-- **Not yet done**: a sixth full-game run with all five fixes hasn't been
-  completed yet; cross-camera synchronization between a board camera and
-  rack camera(s); batching classifier calls for real per-frame speed
-  (currently ~5s/settled-frame on CPU, dominated by repeated
-  single-image inference on occupied cells); the GCG end-of-game
-  bonus/penalty line. See `game_watcher.py`'s and `run_watcher.py`'s
-  module docstrings for the exact scope lines.
+  Re-ran a sixth time with all five fixes: cleanly through turns 1-11,
+  including two adjacent single-cell turns that would previously have
+  merged -- real, direct proof the clustering-by-adjacency design works
+  correctly on genuine, non-bridged cases too, not just the bridged one.
+  Then hit a **sixth issue, a different category entirely**: a screen
+  region (row 0, just above where "RAGBOLT" was being placed) developed
+  a borderline occupancy diff (38-44, against a 38.0 threshold) even
+  though it was visually confirmed empty. Tested the "just use a fresher
+  reference photo" fix directly: a reference from mid-game improved the
+  earlier region but made a *different* region worse near the end of the
+  same game (diff climbed to 46) -- proof that lighting drifts
+  *continuously* over a 30+ minute broadcast, so no single fixed
+  reference point can cover a whole game. **Fixed properly**: `GameWatcher`
+  now continuously refreshes the reference's still-unplayed cells from
+  real frames as the game progresses (gated on the cell being BOTH
+  unplayed in `board_before` AND not currently reading as occupied, so a
+  not-yet-committed real tile can never get silently baked into the
+  background). New regression test simulates two increments of gradual
+  drift and confirms the second increment -- big enough to spuriously
+  cross the threshold against the original reference -- reads correctly
+  as still-empty once the first increment has been absorbed. 232 tests
+  passing.
+- **Not yet done**: a seventh full-game run with all six fixes hasn't
+  been completed yet; cross-camera synchronization between a board
+  camera and rack camera(s); batching classifier calls for real
+  per-frame speed (currently ~5s/settled-frame on CPU, dominated by
+  repeated single-image inference on occupied cells); the GCG
+  end-of-game bonus/penalty line. See `game_watcher.py`'s and
+  `run_watcher.py`'s module docstrings for the exact scope lines.

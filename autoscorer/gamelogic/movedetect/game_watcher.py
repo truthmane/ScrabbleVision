@@ -65,7 +65,7 @@ from typing import Dict, List, Optional, Sequence
 import numpy as np
 
 from autoscorer.api.session import GameSession
-from autoscorer.gamelogic.board import BoardState, Coord, Tile
+from autoscorer.gamelogic.board import BOARD_SIZE, BoardState, Coord, Tile
 from autoscorer.gamelogic.movedetect.constraint_decoder import CLASSIFIER_BLANK_LABEL, decode_feasible_reading
 from autoscorer.gamelogic.movedetect.validator import validate_placement
 from autoscorer.gamelogic.movedetect.word_resolver import words_formed
@@ -74,8 +74,13 @@ from autoscorer.gamelogic.pool.bag_engine import PoolInvariantViolation, compute
 from autoscorer.gamelogic.publish import PendingMove, PublishGateway
 from autoscorer.gamelogic.scoring.rules_engine import score_move
 from autoscorer.perception.board_reader import read_new_cells_voted, read_rack, rack_observations_to_tiles
-from autoscorer.perception.calibration.homography import BoardCalibration
-from autoscorer.perception.occupancy.detector import DEFAULT_DIFF_THRESHOLD, DEFAULT_GRADIENT_THRESHOLD, ReferenceBoard
+from autoscorer.perception.calibration.homography import BoardCalibration, cell_bounds
+from autoscorer.perception.occupancy.detector import (
+    DEFAULT_DIFF_THRESHOLD,
+    DEFAULT_GRADIENT_THRESHOLD,
+    ReferenceBoard,
+    detect_occupancy,
+)
 from autoscorer.perception.stillness.detector import (
     DEFAULT_MOTION_THRESHOLD,
     DEFAULT_STILL_FRAME_COUNT,
@@ -190,6 +195,7 @@ class GameWatcher:
         still_frame_count: int = DEFAULT_STILL_FRAME_COUNT,
         occupancy_diff_threshold: float = DEFAULT_DIFF_THRESHOLD,
         occupancy_gradient_threshold: float = DEFAULT_GRADIENT_THRESHOLD,
+        adaptive_reference: bool = True,
     ) -> None:
         if session is None and publish_gateway is None:
             raise ValueError(
@@ -198,7 +204,25 @@ class GameWatcher:
             )
 
         self.calibration = calibration
-        self.reference_board = reference_board
+        # A single fixed reference photo can't track lighting that keeps
+        # drifting over a long (30+ minute) broadcast -- found running
+        # this against a complete real game: a screen region far in time
+        # from the reference's capture moment developed a modest but
+        # persistent false-positive occupancy diff, and no single fixed
+        # reference point covers a whole game without the same problem
+        # resurfacing somewhere else. When given a single reference image
+        # (the common case), it's copied (never mutate a caller's array)
+        # and its still-unplayed cells get continuously refreshed from
+        # real frames as the game progresses -- see
+        # `_refresh_reference_for_still_empty_cells`. Not supported (yet)
+        # for the multi-reference case (a venue with a genuinely bimodal
+        # empty appearance); adaptive refresh is simply disabled there.
+        if isinstance(reference_board, np.ndarray):
+            self.reference_board: ReferenceBoard = reference_board.copy()
+            self._adaptive_reference = adaptive_reference
+        else:
+            self.reference_board = reference_board
+            self._adaptive_reference = False
         self.classifier = classifier
         self.publish_gateway = publish_gateway
         self.session = session
@@ -250,6 +274,38 @@ class GameWatcher:
             return len(self.session.game_state.history)
         return self._turn_number
 
+    def _refresh_reference_for_still_empty_cells(self, rectified_frame: np.ndarray) -> None:
+        """Replaces the reference's pixels for every cell that's both
+        unplayed in `board_before` AND not currently reading as occupied
+        with this frame's -- keeps the empty-board reference tracking
+        real lighting drift over a long broadcast instead of staying
+        frozen at whatever it looked like at calibration time.
+
+        The occupancy check here matters, not just `board_before`: a cell
+        can be genuinely empty in `board_before` (not yet committed) while
+        a new tile is ALREADY visibly sitting on it -- mid-placement, or
+        confirmed-but-not-yet-applied, or even already applied via a
+        session that updates a board this watcher doesn't own. Refreshing
+        such a cell from the current frame would silently bake that new
+        tile into the reference as "background," making it invisible to
+        every future occupancy check. Already-played cells (per
+        `board_before`) are left untouched regardless -- their reference
+        pixels don't matter, since `board_before.is_empty` already gates
+        them out of every future occupancy check. A no-op when adaptive
+        refresh is disabled (multi-reference venues).
+        """
+        if not self._adaptive_reference:
+            return
+        occupancy = detect_occupancy(
+            rectified_frame, self.reference_board, self.occupancy_diff_threshold, self.occupancy_gradient_threshold,
+        )
+        for row in range(BOARD_SIZE):
+            for col in range(BOARD_SIZE):
+                coord = (row, col)
+                if self.board.is_empty(coord) and not occupancy[coord]:
+                    x1, y1, x2, y2 = cell_bounds(row, col)
+                    self.reference_board[y1:y2, x1:x2] = rectified_frame[y1:y2, x1:x2]
+
     def observe_board_frame(self, frame: np.ndarray, player_id: str) -> WatcherEvent:
         """Feed one sampled board-camera frame in. `player_id` is whose
         turn is currently active -- the caller's responsibility to track
@@ -278,6 +334,10 @@ class GameWatcher:
             diff_threshold=self.occupancy_diff_threshold,
             gradient_threshold=self.occupancy_gradient_threshold,
         )
+        # Refresh using this round's OLD reference for the decision above,
+        # then update for next time -- the most recent frame in the
+        # window is the closest thing to "current lighting" available.
+        self._refresh_reference_for_still_empty_cells(self.calibration.rectify(window[-1]))
         if not candidates:
             # Settled, but nothing new since the last processed turn --
             # this is what makes repeated observation of the same stable
