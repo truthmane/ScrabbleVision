@@ -192,9 +192,29 @@ An ML-powered auto-annotator for livestreamed Scrabble games
   as still-empty once the first increment has been absorbed. 232 tests
   passing.
 - **Not yet done**: cross-camera synchronization between a board
-  camera and rack camera(s); the GCG end-of-game bonus/penalty line.
-  See `game_watcher.py`'s and `run_watcher.py`'s module docstrings for
-  the exact scope lines.
+  camera and rack camera(s); cross-frame temporal voting on rack reads
+  (the rack path now has a stillness gate, see below, but no voting --
+  matching detected tiles across frames first would be needed, since a
+  rack has no fixed grid to vote per-position against like board cells
+  do); the GCG end-of-game bonus/penalty line. See `game_watcher.py`'s
+  and `run_watcher.py`'s module docstrings for the exact scope lines.
+- **Rack-specific stillness gate.** `record_rack` used to read whatever
+  single frame was handed to it, with no check that the rack was
+  actually settled -- a hand still moving tiles around mid-exchange
+  could get read as if it were a finished rack. Added a per-player
+  rolling frame buffer gated through the same `stable_window` check the
+  board path already uses (`still_frame_count` consecutive low-motion
+  frames required before a read happens); `record_rack` returns `None`
+  while still waiting, same as it already did for "no change," so
+  callers don't see a new contract, just a real read attempted less
+  often and only once actually settled. Cross-frame *voting* on rack
+  reads (like the board path's `read_new_cells_voted`) still isn't
+  built -- would need to match detected tiles across frames first,
+  since a rack has no fixed grid to vote per-position against. New
+  tests: settling now requires repeated calls (mirrors the board path's
+  own `_settle` test helper), and a rack alternating between a clean
+  frame and one with a large hand-sized occlusion never settles across
+  6 calls. 235 tests passing (was 234).
 - **Classifier calls batched.** `read_new_cells_voted` previously called
   the classifier once per (cell, frame) pair -- for a 7-cell turn over a
   5-frame settled window, 35 separate forward passes. Added

@@ -21,13 +21,18 @@ being a system rather than a collection of validated parts.
   temporal voting, constraint decoding, and scoring engine already built
   and tested elsewhere in this repo.
 - Rack-camera processing (`record_rack`) is real but deliberately
-  simpler: a single-frame read via `board_reader.read_rack`, not
-  multi-frame voted like the board path (no rack-specific stillness gate
-  exists yet), and not synchronized with the board camera's frame clock
-  at all -- call it whenever a rack frame is available, on whatever
-  schedule the caller has. Whose turn it is, is supplied by the caller
-  (`player_id`), not inferred from vision -- there is no game-clock
-  integration here to derive that from.
+  simpler than the board path: each player's rack frames are buffered
+  and gated through the same stillness check (`stable_window`) the board
+  path uses, so a rack mid-rearrangement (a hand moving tiles around)
+  doesn't get read as a settled state -- but there's no cross-frame
+  temporal voting once settled (unlike the board path's
+  `read_new_cells_voted`), since voting per detected tile would first
+  need to match detections across frames (a rack has no fixed grid to
+  vote against, unlike board cells), which isn't built. Not synchronized
+  with the board camera's frame clock at all -- call it whenever a rack
+  frame is available, on whatever schedule the caller has. Whose turn it
+  is, is supplied by the caller (`player_id`), not inferred from vision
+  -- there is no game-clock integration here to derive that from.
 - **PASS moves can never be detected from vision alone** (nothing changes
   when a player passes) and this module does not attempt to -- that
   requires an external turn-clock signal, out of scope here.
@@ -268,6 +273,10 @@ class GameWatcher:
         # observation, same as before, before it's trusted.
         self._confirmed_cells: frozenset = frozenset()
         self._last_candidate_cells: frozenset = frozenset()
+        # Per-player rolling rack-frame buffer, gated through the same
+        # stillness check the board path uses (see `record_rack`) --
+        # keyed by player_id since two rack cameras settle independently.
+        self._rack_frame_buffers: Dict[str, List[np.ndarray]] = {}
 
     @property
     def board(self) -> BoardState:
@@ -510,10 +519,21 @@ class GameWatcher:
     def record_rack(
         self, player_id: str, rack_frame: np.ndarray, detection_threshold: float = 0.3,
     ) -> Optional[WatcherEvent]:
-        """Reads one player's current rack (single frame, see the module
-        docstring's scope notes). The *first* call for a given `player_id`
-        just establishes their starting rack silently (returns None) --
-        every player starts with a full rack, so that's not an event, it's
+        """Feed one sampled rack-camera frame in for `player_id` (see the
+        module docstring's scope notes). Like the board path, a frame
+        isn't read the instant it arrives -- it's buffered per player and
+        gated through the same stillness check (`stable_window`) the
+        board path uses, so a rack caught mid-rearrangement (a hand still
+        moving tiles) doesn't get read as if it were settled. Returns None
+        while still waiting for a still window, exactly as it does for "no
+        change" once reading does happen -- callers already have to
+        tolerate a None result meaning "nothing to report from this call,"
+        so this doesn't change that contract, only how often a real read
+        gets attempted.
+
+        Once settled, the *first* observation for a given `player_id` just
+        establishes their starting rack silently (returns None) -- every
+        player starts with a full rack, so that's not an event, it's
         initial knowledge. After that, returns an EXCHANGE event if the
         rack genuinely changed since the last *confirmed* read, or None if
         unchanged (including pure re-arrangement -- order never matters
@@ -528,8 +548,24 @@ class GameWatcher:
         if self.rack_detector is None:
             raise ValueError("record_rack needs a rack_detector; pass one to GameWatcher.__init__")
 
+        buffer = self._rack_frame_buffers.setdefault(player_id, [])
+        buffer.append(rack_frame)
+        cap = self.still_frame_count + 1
+        if len(buffer) > cap:
+            self._rack_frame_buffers[player_id] = buffer[-cap:]
+
+        window = stable_window(self._rack_frame_buffers[player_id], self.motion_threshold, self.still_frame_count)
+        if window is None:
+            return None
+        # All frames in a stable window read the same by construction (the
+        # motion gate requires negligible change between every consecutive
+        # pair) -- the most recent one is as good as any, and matches the
+        # board path's convention of using window[-1] where a single frame
+        # is needed.
+        settled_frame = window[-1]
+
         is_first_observation = player_id not in self.racks
-        observations = read_rack(rack_frame, self.rack_detector, self.classifier, detection_threshold)
+        observations = read_rack(settled_frame, self.rack_detector, self.classifier, detection_threshold)
         new_rack = rack_observations_to_tiles(observations)
         previous_rack = self.racks.get(player_id, [])
 

@@ -447,6 +447,17 @@ def _rack_image_with_tiles(letters, rng, gap=10):
     return image, boxes
 
 
+def _settle_rack(watcher, image, player_id, count=3):
+    """Feeds the same rack frame in repeatedly until the rack-specific
+    stillness gate (mirrors the board path's `_settle`) reports it
+    settled -- identical consecutive frames read as zero motion, so this
+    always reaches a real (non-None-due-to-still-settling) result."""
+    event = None
+    for _ in range(count):
+        event = watcher.record_rack(player_id, image.copy())
+    return event
+
+
 def test_record_rack_first_observation_is_silent(tmp_path):
     pytest.importorskip("supervision", reason="supervision (an rfdetr[train] dependency) not installed")
     classifier = _train_tiny_classifier(tmp_path)
@@ -454,10 +465,33 @@ def test_record_rack_first_observation_is_silent(tmp_path):
     rack_image, boxes = _rack_image_with_tiles(["A", "N", "T"], rng)
     watcher = _make_watcher(classifier, rack_detector=_FakeRackDetector(boxes))
 
-    event = watcher.record_rack("p1", rack_image)
+    event = _settle_rack(watcher, rack_image, "p1")
 
     assert event is None
     assert [t.letter for t in watcher.racks["p1"]] == ["A", "N", "T"]
+
+
+def test_record_rack_mid_rearrangement_is_not_read_as_settled(tmp_path):
+    """A hand still moving frame-to-frame over the rack (simulated here
+    with a large hand-sized occlusion alternating in and out, the same
+    technique the board path's own stillness test uses -- a rack-sized
+    version of a single differing tile turned out too small a change to
+    reliably register on the whole-frame motion signal) must never reach
+    a real rack read -- exactly the board path's HANDS_OVER_BOARD-style
+    protection, applied to racks."""
+    pytest.importorskip("supervision", reason="supervision (an rfdetr[train] dependency) not installed")
+    classifier = _train_tiny_classifier(tmp_path)
+    rng = random.Random(3)
+    image, boxes = _rack_image_with_tiles(["A", "N", "T"], rng)
+    occluded = image.copy()
+    occluded[:, : image.shape[1] // 2] = 255  # a hand-sized patch over half the rack
+    watcher = _make_watcher(classifier, rack_detector=_FakeRackDetector(boxes))
+
+    for i in range(6):
+        event = watcher.record_rack("p1", image.copy() if i % 2 == 0 else occluded.copy())
+        assert event is None
+
+    assert "p1" not in watcher.racks
 
 
 def test_record_rack_reports_exchange_on_genuine_change(tmp_path):
@@ -466,11 +500,11 @@ def test_record_rack_reports_exchange_on_genuine_change(tmp_path):
     rng = random.Random(3)
     first_image, first_boxes = _rack_image_with_tiles(["A", "N", "T"], rng)
     watcher = _make_watcher(classifier, rack_detector=_FakeRackDetector(first_boxes))
-    watcher.record_rack("p1", first_image)  # establishes the starting rack
+    _settle_rack(watcher, first_image, "p1")  # establishes the starting rack
 
     second_image, second_boxes = _rack_image_with_tiles(["N", "A", "N"], rng)
     watcher.rack_detector = _FakeRackDetector(second_boxes)
-    event = watcher.record_rack("p1", second_image)
+    event = _settle_rack(watcher, second_image, "p1")
 
     assert event is not None
     assert event.state == WatcherState.APPLIED
@@ -484,13 +518,13 @@ def test_record_rack_reordering_only_is_not_reported_as_a_change(tmp_path):
     rng = random.Random(3)
     first_image, first_boxes = _rack_image_with_tiles(["A", "N", "T"], rng)
     watcher = _make_watcher(classifier, rack_detector=_FakeRackDetector(first_boxes))
-    watcher.record_rack("p1", first_image)
+    _settle_rack(watcher, first_image, "p1")
 
     # Same multiset, different order -- a player rearranging their own
     # tiles, not an exchange.
     reordered_image, reordered_boxes = _rack_image_with_tiles(["T", "A", "N"], rng)
     watcher.rack_detector = _FakeRackDetector(reordered_boxes)
-    event = watcher.record_rack("p1", reordered_image)
+    event = _settle_rack(watcher, reordered_image, "p1")
 
     assert event is None
 
@@ -698,7 +732,7 @@ def test_delegated_mode_record_rack_first_observation_seeds_session_racks_silent
     rack_image, boxes = _rack_image_with_tiles(["A", "N", "T"], rng)
     watcher = _make_session_watcher(classifier, session, rack_detector=_FakeRackDetector(boxes))
 
-    event = watcher.record_rack("p1", rack_image)
+    event = _settle_rack(watcher, rack_image, "p1")
 
     assert event is None
     assert [t.letter for t in session.game_state.racks["p1"]] == ["A", "N", "T"]
@@ -712,11 +746,11 @@ def test_delegated_mode_record_rack_exchange_goes_through_session_submit_move(tm
     rng = random.Random(3)
     first_image, first_boxes = _rack_image_with_tiles(["A", "N", "T"], rng)
     watcher = _make_session_watcher(classifier, session, rack_detector=_FakeRackDetector(first_boxes))
-    watcher.record_rack("p1", first_image)
+    _settle_rack(watcher, first_image, "p1")
 
     second_image, second_boxes = _rack_image_with_tiles(["N", "A", "N"], rng)
     watcher.rack_detector = _FakeRackDetector(second_boxes)
-    event = watcher.record_rack("p1", second_image)
+    event = _settle_rack(watcher, second_image, "p1")
 
     assert event is not None
     assert event.needs_operator is False
