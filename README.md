@@ -191,13 +191,25 @@ An ML-powered auto-annotator for livestreamed Scrabble games
   cross the threshold against the original reference -- reads correctly
   as still-empty once the first increment has been absorbed. 232 tests
   passing.
-- **Not yet done**: a seventh full-game run with all six fixes hasn't
-  been completed yet; cross-camera synchronization between a board
-  camera and rack camera(s); batching classifier calls for real
-  per-frame speed (currently ~5s/settled-frame on CPU, dominated by
-  repeated single-image inference on occupied cells); the GCG
-  end-of-game bonus/penalty line. See `game_watcher.py`'s and
-  `run_watcher.py`'s module docstrings for the exact scope lines.
+- **Not yet done**: cross-camera synchronization between a board
+  camera and rack camera(s); the GCG end-of-game bonus/penalty line.
+  See `game_watcher.py`'s and `run_watcher.py`'s module docstrings for
+  the exact scope lines.
+- **Classifier calls batched.** `read_new_cells_voted` previously called
+  the classifier once per (cell, frame) pair -- for a 7-cell turn over a
+  5-frame settled window, 35 separate forward passes. Added
+  `TileClassifierModel.predict_topk_batch()`, which stacks every crop
+  into one tensor for a single forward pass; this is mathematically
+  identical to the one-at-a-time calls (the model runs in `eval()` mode,
+  so BatchNorm uses its stored running statistics rather than the
+  current batch's -- no image's result can depend on what else shares
+  its batch). `board_reader.py` now collects every (cell, frame) crop
+  across the whole window before calling the classifier once, instead of
+  inside the per-cell loop. New regression test proves batched output is
+  numerically identical to individual `predict_topk` calls (`abs=1e-5`),
+  plus an empty-input test. Measured directly against a real 7-cell turn
+  from the Game 1 broadcast: 2.81s total (down from the ~5s/frame,
+  per-crop-call baseline this was written to fix). 234 tests passing.
 - **First full end-to-end completion of a complete real game.** Re-ran
   with all six fixes (adding the blended-reference refinement above) and
   the pipeline processed the entire ~37-minute broadcast start to finish

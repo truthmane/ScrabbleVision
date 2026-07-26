@@ -180,19 +180,32 @@ def read_new_cells_voted(
         for coord in per_frame_occupancy[0]
     }
 
+    new_cells = [
+        (row, col)
+        for row in range(BOARD_SIZE)
+        for col in range(BOARD_SIZE)
+        if occupancy[(row, col)] and board_before.is_empty((row, col))
+    ]
+    if not new_cells:
+        return []
+
+    # One batched forward pass for every (cell, frame) crop instead of a
+    # separate classifier call each -- mathematically identical results
+    # (see TileClassifierModel.predict_topk_batch's docstring), just
+    # sharply fewer, larger forward passes.
+    crops = [
+        cv2.cvtColor(crop_cell(rectified, row, col), cv2.COLOR_BGR2RGB)
+        for (row, col) in new_cells
+        for rectified in rectified_frames
+    ]
+    all_candidates = classifier.predict_topk_batch(crops, k=num_classes)
+
     results = []
-    for row in range(BOARD_SIZE):
-        for col in range(BOARD_SIZE):
-            coord = (row, col)
-            if not occupancy[coord] or not board_before.is_empty(coord):
-                continue
-            per_frame_candidates = []
-            for rectified in rectified_frames:
-                crop = crop_cell(rectified, row, col)
-                crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-                per_frame_candidates.append(classifier.predict_topk(crop_rgb, k=num_classes))
-            voted = temporal_vote(per_frame_candidates)[:top_k]
-            results.append(CellCandidates(coord=coord, candidates=voted))
+    num_frames = len(rectified_frames)
+    for i, coord in enumerate(new_cells):
+        per_frame_candidates = all_candidates[i * num_frames:(i + 1) * num_frames]
+        voted = temporal_vote(per_frame_candidates)[:top_k]
+        results.append(CellCandidates(coord=coord, candidates=voted))
     return results
 
 

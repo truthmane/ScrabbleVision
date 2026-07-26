@@ -4,7 +4,7 @@ checkpoint -- what the perception bridge actually calls per occupied cell.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Tuple, Union
+from typing import List, Sequence, Tuple, Union
 
 import numpy as np
 import torch
@@ -66,3 +66,32 @@ class TileClassifierModel:
         k = min(k, len(self.classes))
         top_probs, top_idx = torch.topk(probs, k)
         return [(self.classes[i], float(p)) for p, i in zip(top_probs, top_idx)]
+
+    def predict_topk_batch(
+        self, images: Sequence[Union[Image.Image, np.ndarray]], k: int = 3,
+    ) -> List[List[Tuple[str, float]]]:
+        """Batched `predict_topk`: classifies many crops in one forward
+        pass instead of one at a time. Numerically identical to calling
+        `predict_topk` on each image separately -- the model runs in eval
+        mode (`self.model.eval()`, set in `__init__`), so BatchNorm uses
+        its stored running statistics rather than the current batch's,
+        meaning one image's result never depends on what else is in the
+        batch. This is where nearly all of the live pipeline's per-
+        settled-frame cost lives (`board_reader.read_new_cells_voted`
+        calls this once per occupied cell per window frame), so batching
+        directly targets the ~5s/settled-frame bottleneck noted in
+        `game_watcher.py`'s and the README's scope notes.
+        """
+        if not images:
+            return []
+        pil_images = [Image.fromarray(img) if isinstance(img, np.ndarray) else img for img in images]
+        tensor = torch.stack([self._transform(img.convert("RGB")) for img in pil_images]).to(self.device)
+        with torch.no_grad():
+            logits = self.model(tensor)
+            probs = torch.softmax(logits / self.temperature, dim=1)
+        k = min(k, len(self.classes))
+        results = []
+        for row_probs in probs:
+            top_probs, top_idx = torch.topk(row_probs, k)
+            results.append([(self.classes[i], float(p)) for p, i in zip(top_probs, top_idx)])
+        return results

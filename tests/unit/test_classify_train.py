@@ -6,6 +6,7 @@ training job, not a unit test).
 """
 import random
 
+import pytest
 import torch
 
 from training.classify.infer import TileClassifierModel
@@ -53,6 +54,52 @@ def test_checkpoint_round_trip_and_inference(tmp_path):
     label, confidence = loaded.predict(augmented)
     assert label in loaded.classes
     assert 0.0 <= confidence <= 1.0
+
+
+def test_predict_topk_batch_matches_individual_predict_topk_calls(tmp_path):
+    """Regression test for the classifier-call batching added to speed up
+    the live pipeline's documented ~5s/settled-frame bottleneck
+    (board_reader.read_new_cells_voted calls the classifier once per
+    occupied cell per window frame -- batching all of those into one
+    forward pass is only safe if it can't change any individual result).
+    The model runs in eval mode, so BatchNorm uses its stored running
+    statistics rather than the current batch's -- one image's result
+    should never depend on what else shares its batch. Uses several
+    different letters, not just repeats of one, so a batching bug that
+    only shows up when classes differ within a batch would still be
+    caught.
+    """
+    data_dir = _tiny_dataset(tmp_path)
+    model, result = run_training(data_dir, epochs=25, batch_size=8, device=torch.device("cpu"), seed=0)
+    checkpoint_path = tmp_path / "model.pt"
+    save_checkpoint(model, result.classes, checkpoint_path)
+    loaded = TileClassifierModel(checkpoint_path, device="cpu")
+
+    rng = random.Random(42)
+    images = [
+        augment_tile(render_tile(letter, rng=rng), rng=rng)
+        for letter in ["A", "B", None, "A", "B"]
+    ]
+
+    individually = [loaded.predict_topk(img, k=3) for img in images]
+    batched = loaded.predict_topk_batch(images, k=3)
+
+    assert len(batched) == len(images)
+    for one_by_one, from_batch in zip(individually, batched):
+        assert len(one_by_one) == len(from_batch)
+        for (label_a, conf_a), (label_b, conf_b) in zip(one_by_one, from_batch):
+            assert label_a == label_b
+            assert conf_a == pytest.approx(conf_b, abs=1e-5)
+
+
+def test_predict_topk_batch_handles_an_empty_list(tmp_path):
+    data_dir = _tiny_dataset(tmp_path)
+    model, result = run_training(data_dir, epochs=25, batch_size=8, device=torch.device("cpu"), seed=0)
+    checkpoint_path = tmp_path / "model.pt"
+    save_checkpoint(model, result.classes, checkpoint_path)
+    loaded = TileClassifierModel(checkpoint_path, device="cpu")
+
+    assert loaded.predict_topk_batch([], k=3) == []
 
 
 def test_fine_tuning_from_checkpoint_requires_matching_classes(tmp_path):
