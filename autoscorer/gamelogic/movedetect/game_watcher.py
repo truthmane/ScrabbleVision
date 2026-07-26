@@ -114,6 +114,15 @@ def _rack_multiset(tiles: Sequence[Tile]) -> Counter:
     return Counter((tile.letter, tile.is_blank) for tile in tiles)
 
 
+# Weight given to each new frame when refreshing the adaptive reference
+# (see GameWatcher._refresh_reference_for_still_empty_cells) -- low
+# enough that one noisy frame can't singlehandedly redefine what
+# "empty" looks like for a cell, high enough that genuine drift across
+# many real settled observations gets absorbed in a reasonable number of
+# them rather than never.
+_REFERENCE_EMA_ALPHA = 0.3
+
+
 def _cluster_cells(cells: frozenset, board_before: BoardState) -> List[frozenset]:
     """Groups new-cell coordinates into clusters connected through
     contiguous occupied cells.
@@ -293,6 +302,14 @@ class GameWatcher:
         pixels don't matter, since `board_before.is_empty` already gates
         them out of every future occupancy check. A no-op when adaptive
         refresh is disabled (multi-reference venues).
+
+        Blended (exponential moving average), not a hard replace: a
+        single noisy settled frame (a stray shadow, a compression
+        artifact) would otherwise get instantly adopted as the new
+        "ground truth" for that cell, which can make things worse rather
+        than better. Blending a small fraction of each new observation in
+        still tracks genuine gradual drift over the many settled
+        observations of a real game, while resisting any single bad one.
         """
         if not self._adaptive_reference:
             return
@@ -304,7 +321,10 @@ class GameWatcher:
                 coord = (row, col)
                 if self.board.is_empty(coord) and not occupancy[coord]:
                     x1, y1, x2, y2 = cell_bounds(row, col)
-                    self.reference_board[y1:y2, x1:x2] = rectified_frame[y1:y2, x1:x2]
+                    old = self.reference_board[y1:y2, x1:x2].astype(np.float32)
+                    new = rectified_frame[y1:y2, x1:x2].astype(np.float32)
+                    blended = (1.0 - _REFERENCE_EMA_ALPHA) * old + _REFERENCE_EMA_ALPHA * new
+                    self.reference_board[y1:y2, x1:x2] = np.clip(blended, 0, 255).astype(np.uint8)
 
     def observe_board_frame(self, frame: np.ndarray, player_id: str) -> WatcherEvent:
         """Feed one sampled board-camera frame in. `player_id` is whose
