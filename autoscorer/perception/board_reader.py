@@ -150,8 +150,10 @@ def read_new_cells_voted(
     Each cell gets a **support tier** from its vote count across the
     window rather than a hard unanimous AND: `votes == len(raw_frames)` is
     HARD (identical to the original all-frames-agree behaviour -- see
-    `CellCandidates.is_soft`, False here); `0 < votes < len(raw_frames)` is
-    SOFT (`is_soft=True`). Unanimity was added because a hand hovering
+    `CellCandidates.is_soft`, False here); a strict MAJORITY of frames
+    (more than half, not merely "at least one") is SOFT (`is_soft=True`);
+    anything weaker is treated as no signal at all, same as before tiers
+    existed. Unanimity was added because a hand hovering
     near (not over) the board can be too small a change for the coarse
     whole-frame stillness gate to reject, yet still nudge one frame's diff
     score for a specific cell across the occupancy threshold -- checking
@@ -211,6 +213,18 @@ def read_new_cells_voted(
         for col in range(BOARD_SIZE)
         if votes[(row, col)] == num_frames and board_before.is_empty((row, col))
     }
+    # SOFT requires a strict MAJORITY of frames, not merely "more than
+    # zero" -- a real-video run found the earlier any-vote-at-all bar let
+    # a single sporadic frame (ordinary compression/lighting noise, not a
+    # real tile) qualify a neighbor as extension material, and since
+    # `GameWatcher` ranks a soft-extended candidate by cell count first
+    # (longer wins -- see its docstring on why), a persistent noisy
+    # neighbor next to a real placement could win the ranking on *every*
+    # observation, not just once. Requiring the majority to agree pushes
+    # this back toward "most of the window saw something here" (matching
+    # the real RAGBOLT case: diff 38.96 against a 38.0 threshold, a bare
+    # miss, not a single-frame blip) and away from "one frame flickered."
+    soft_min_votes = num_frames // 2 + 1
     soft_neighbors = set()
     for row, col in hard_cells:
         for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
@@ -218,7 +232,7 @@ def read_new_cells_voted(
             if (
                 0 <= neighbor[0] < BOARD_SIZE and 0 <= neighbor[1] < BOARD_SIZE
                 and neighbor not in hard_cells
-                and 0 < votes[neighbor] < num_frames
+                and soft_min_votes <= votes[neighbor] < num_frames
                 and board_before.is_empty(neighbor)
             ):
                 soft_neighbors.add(neighbor)

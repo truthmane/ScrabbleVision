@@ -198,6 +198,20 @@ cells), something is still genuinely stuck -- emit a `STALLED` event and
 force-quarantine every confirmed cell with any failure history, rather
 than continuing to retry silently forever."""
 
+SOFT_CELL_MIN_CONFIDENCE = 0.5
+"""A SOFT cell (see `read_new_cells_voted`) is only usable as an
+in-line extension of a HARD run if its own temporal-voted top label also
+clears this confidence floor -- majority occupancy support alone isn't
+enough. A real full-game run found that a soft-extended candidate is
+ranked *ahead* of the plain HARD one (it's longer -- see the ranking
+comment below), and phonies being legal means a nonsense extension can't
+be rejected on spelling alone; if the extension is real content and not
+just an occupancy near-miss, an ordinary letter should still be visible
+enough to the classifier that its own confidence says so. Not yet
+re-tuned against real footage beyond confirming it removes the
+regression this was added for -- treat as a starting point, same as the
+occupancy thresholds."""
+
 
 class GameWatcher:
     """Owns the rolling board-camera frame buffer; each call to
@@ -463,7 +477,20 @@ class GameWatcher:
         # quarantine) byte-for-byte the same as before support tiers
         # existed -- a SOFT cell can add to a placement, never anchor one.
         current_cells = frozenset(cc.coord for cc in candidates if not cc.is_soft)
-        self._soft_cells = frozenset(cc.coord for cc in candidates if cc.is_soft)
+        # Majority occupancy support (see read_new_cells_voted) alone
+        # isn't enough to trust as extension material -- also require the
+        # cell's own temporal-voted top label to clear a confidence floor
+        # (SOFT_CELL_MIN_CONFIDENCE). A real full-game run showed why:
+        # a soft-extended candidate is tried before the plain HARD one
+        # (it's longer -- see the ranking comment below), so an
+        # unconfident SOFT cell -- more likely occupancy noise than a
+        # real tile -- could otherwise hijack the ranking on every single
+        # observation, since "phonies are legal" means a nonsense
+        # extension can't be rejected on spelling alone.
+        self._soft_cells = frozenset(
+            cc.coord for cc in candidates
+            if cc.is_soft and cc.candidates and cc.candidates[0][1] >= SOFT_CELL_MIN_CONFIDENCE
+        )
         newly_confirmed = current_cells & self._last_candidate_cells
         # Intersecting with current_cells means a cell that stops
         # appearing (a marginal one that turned out not to be real, or a

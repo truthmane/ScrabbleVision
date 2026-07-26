@@ -209,17 +209,21 @@ def test_read_new_cells_voted_tiers_partial_occupancy_agreement_as_soft(tmp_path
     silently drops real detections along with real noise. Support tiers
     keep both cases visible instead of collapsing them to the same
     boolean: a cell every frame agrees on is HARD (`is_soft=False`,
-    unchanged from the original behavior); a cell only some frames agree
-    on is SOFT (`is_soft=True`) -- but **only when adjacent to a HARD
-    cell**. A second real-video run against the full WESPA broadcast
-    found that surfacing every partial-vote cell *anywhere on the board*
-    reintroduces exactly the widespread noise unanimity was built to
-    reject (ordinary compression/lighting flicker nudges plenty of
-    genuinely empty cells over threshold in a single frame), each one
-    then paid for at full classifier cost -- a several-minute real run
-    ballooned past 30 minutes with no accuracy gain. So this test also
-    pins that a distant partial-vote cell, unconnected to any real tile,
-    is correctly invisible.
+    unchanged from the original behavior); a cell where a strict MAJORITY
+    of frames agree (not merely "at least one") is SOFT (`is_soft=True`)
+    -- but **only when adjacent to a HARD cell**. A second real-video run
+    against the full WESPA broadcast found that surfacing every
+    partial-vote cell *anywhere on the board*, at *any* vote count above
+    zero, reintroduces exactly the widespread noise unanimity was built
+    to reject (ordinary compression/lighting flicker nudges plenty of
+    genuinely empty cells over threshold in a single frame out of the
+    window), each one then paid for at full classifier cost -- a
+    several-minute real run ballooned past 30 minutes with no accuracy
+    gain, and worse, a persistent single-frame-noise neighbor could win
+    the ranking against a real placement on every observation. So this
+    test also pins that a single-frame (non-majority) blip, even adjacent
+    to a HARD cell, and a majority-agreement cell that's NOT adjacent to
+    anything real, are both correctly invisible.
     """
     classifier = _train_tiny_classifier(tmp_path)
     reference = _blank_board_image()
@@ -233,17 +237,23 @@ def test_read_new_cells_voted_tiers_partial_occupancy_agreement_as_soft(tmp_path
         _place_tile(frame, 4, 0, "A", rng)
         frames.append(frame)
 
-    # Partial-agreement noise at (4, 1) -- ADJACENT to the hard tile,
-    # standing in for the real RAGBOLT case (a genuine tile just past an
-    # already-detected run) -- and at (6, 6), far from anything real,
-    # standing in for ordinary board-wide compression/lighting noise.
-    # Both are brightness shifts (same pattern as
-    # test_read_new_cells_respects_custom_occupancy_thresholds), present
-    # in only the FIRST frame of the window, absent from the other four.
-    for row, col in ((4, 1), (6, 6)):
+    # Majority (3 of 5), not unanimous, agreement at (4, 1) -- ADJACENT to
+    # the hard tile, standing in for the real RAGBOLT case (a genuine
+    # tile just past an already-detected run). A single-frame blip at
+    # (4, 2) -- also adjacent, but below the majority bar -- and a
+    # majority-agreement blip at (6, 6) -- far from anything real -- are
+    # both noise this bound must still reject. All are brightness shifts
+    # (same pattern as test_read_new_cells_respects_custom_occupancy_thresholds).
+    for frame in frames[:3]:
+        x1, y1, x2, y2 = cell_bounds(4, 1)
+        shifted = np.clip(frame[y1:y2, x1:x2].astype(np.int16) + 60, 0, 255).astype(np.uint8)
+        frame[y1:y2, x1:x2] = shifted
+    for row, col in ((4, 2), (6, 6)):
+        count = 1 if (row, col) == (4, 2) else 3
         x1, y1, x2, y2 = cell_bounds(row, col)
-        shifted = np.clip(frames[0][y1:y2, x1:x2].astype(np.int16) + 60, 0, 255).astype(np.uint8)
-        frames[0][y1:y2, x1:x2] = shifted
+        for frame in frames[:count]:
+            shifted = np.clip(frame[y1:y2, x1:x2].astype(np.int16) + 60, 0, 255).astype(np.uint8)
+            frame[y1:y2, x1:x2] = shifted
 
     candidates = read_new_cells_voted(frames, IDENTITY_CALIBRATION, reference, classifier, board_before, top_k=2)
 

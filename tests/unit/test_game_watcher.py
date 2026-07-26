@@ -495,6 +495,49 @@ def test_a_soft_cell_extends_an_already_confirmed_hard_run_and_forces_operator_r
     assert watcher.board.is_blank_board(), "an operator-pending candidate must not apply to the board yet"
 
 
+def test_a_low_confidence_soft_cell_is_never_used_to_extend_a_placement(tmp_path, monkeypatch):
+    """Regression test for a real accuracy regression a full-game run
+    against the real WESPA broadcast found: majority occupancy support
+    alone isn't enough to trust a SOFT cell as extension material, since
+    a soft-extended candidate is tried *before* the plain HARD one (it's
+    longer -- see the ranking comment in observe_board_frame) and phonies
+    being legal means a nonsense extension can't be rejected on spelling
+    alone. A persistent but low-confidence SOFT neighbor (more likely
+    occupancy noise than a real tile) must never win that race -- the
+    plain HARD pair should commit on its own instead, exactly as if the
+    SOFT cell had never been reported at all.
+    """
+    from autoscorer.gamelogic.movedetect.constraint_decoder import CellCandidates
+
+    classifier = _train_tiny_classifier(tmp_path)
+    watcher = _make_watcher(classifier, mode=PublishMode.AUTONOMOUS)
+
+    hard_only = [
+        CellCandidates(coord=(7, 6), candidates=[("A", 0.99)], is_soft=False),
+        CellCandidates(coord=(7, 7), candidates=[("N", 0.99)], is_soft=False),
+    ]
+    # Same shape as the extension test above, but the SOFT cell's own
+    # top-label confidence is well below SOFT_CELL_MIN_CONFIDENCE (0.5).
+    hard_plus_low_confidence_soft = hard_only + [
+        CellCandidates(coord=(7, 8), candidates=[("T", 0.2)], is_soft=True),
+    ]
+    calls = iter([hard_only, hard_plus_low_confidence_soft])
+    monkeypatch.setattr(gw_module, "read_new_cells_voted", lambda *a, **k: next(calls))
+
+    frame = _blank_board_image()
+    events = [watcher.observe_board_frame(frame.copy(), player_id="p1") for _ in range(4)]
+
+    final = events[-1]
+    assert final.scored_move is not None
+    assert final.scored_move.candidate.new_cells == ((7, 6), (7, 7)), (
+        "a low-confidence SOFT cell must not be used for extension -- the plain HARD pair (AN) should commit instead"
+    )
+    assert final.needs_operator is False, "the plain HARD pair is a normal, non-soft-extended commit"
+    assert watcher.board.get((7, 6)).letter == "A"
+    assert watcher.board.get((7, 7)).letter == "N"
+    assert watcher.board.is_empty((7, 8)), "the low-confidence soft cell must not have been placed at all"
+
+
 def test_watchdog_emits_a_stalled_event_after_repeated_failures(tmp_path, monkeypatch):
     """After enough consecutive failed observations, a `STALLED` watchdog
     event fires as a backstop beyond per-cell quarantine alone -- this is
