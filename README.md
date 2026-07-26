@@ -137,10 +137,31 @@ An ML-powered auto-annotator for livestreamed Scrabble games
   own). 229 tests passing (one pre-existing flaky test in the tiny-
   classifier-training suite unrelated to this change, confirmed by
   re-running clean 4/4 times).
-- **Not yet done**: a fourth full-game run with all three fixes hasn't
-  been completed yet; cross-camera synchronization between a board
-  camera and rack camera(s); batching classifier calls for real
-  per-frame speed (currently ~5s/settled-frame on CPU, dominated by
-  repeated single-image inference on occupied cells); the GCG
-  end-of-game bonus/penalty line. See `game_watcher.py`'s and
-  `run_watcher.py`'s module docstrings for the exact scope lines.
+  Re-ran a fourth time with a small refinement (only clear per-cell
+  confirmation state on a genuine commit, not on any failed attempt, so
+  a confirmed cell doesn't have to re-wait two full observations every
+  time a transient neighbor spoils one retry) and got twice as far again
+  (cleanly through turn 9) before hitting a **fourth, deeper issue**:
+  `board_before` can genuinely have more than one turn's worth of
+  unaccounted-for tiles new at once -- e.g. a slow multi-tile word (a
+  real 7-letter bingo, "RAGBOLT") still being placed in one part of the
+  board while an unrelated, already-stable cell elsewhere is also new.
+  Both passed per-cell confirmation, but were treated as ONE combined
+  placement, which can never validate as a single legal line since
+  they're nowhere near each other -- so it failed the same way, forever,
+  every retry. **Fixed** by clustering confirmed cells by orthogonal
+  adjacency before validating -- a word's tiles are always contiguous, so
+  two unrelated cells that happen to stabilize at the same time now form
+  two separate candidate clusters, and only one is acted on per turn (the
+  rest stay exactly as confirmed as they are and get picked up, against
+  an updated board, on a later call). Covered by a new regression test:
+  two disconnected, independently-legal single-cell placements confirmed
+  in the same observation, verifying they commit as two separate turns
+  rather than one failed, merged one. 230 tests passing.
+- **Not yet done**: a fifth full-game run with all four fixes hasn't been
+  completed yet; cross-camera synchronization between a board camera and
+  rack camera(s); batching classifier calls for real per-frame speed
+  (currently ~5s/settled-frame on CPU, dominated by repeated
+  single-image inference on occupied cells); the GCG end-of-game
+  bonus/penalty line. See `game_watcher.py`'s and `run_watcher.py`'s
+  module docstrings for the exact scope lines.

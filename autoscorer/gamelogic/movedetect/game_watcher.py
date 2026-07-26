@@ -109,6 +109,36 @@ def _rack_multiset(tiles: Sequence[Tile]) -> Counter:
     return Counter((tile.letter, tile.is_blank) for tile in tiles)
 
 
+def _cluster_cells(cells: frozenset) -> List[frozenset]:
+    """Groups new-cell coordinates into orthogonally-connected clusters.
+
+    A single word's tiles are always contiguous; two cells that are new
+    at the same time but nowhere near each other belong to two different
+    (possibly not-yet-finished) turns, not one scattered, illegal
+    placement. Needed because `board_before` can genuinely have more than
+    one turn's worth of unaccounted-for tiles at once -- e.g. a slow
+    multi-tile word still being placed in one part of the board while a
+    separate, unrelated cell elsewhere is also new -- and lumping them
+    into a single set would never validate as one legal line.
+    """
+    remaining = set(cells)
+    clusters: List[frozenset] = []
+    while remaining:
+        seed = next(iter(remaining))
+        cluster = {seed}
+        frontier = [seed]
+        remaining.discard(seed)
+        while frontier:
+            r, c = frontier.pop()
+            for neighbor in ((r + 1, c), (r - 1, c), (r, c + 1), (r, c - 1)):
+                if neighbor in remaining:
+                    remaining.discard(neighbor)
+                    cluster.add(neighbor)
+                    frontier.append(neighbor)
+        clusters.append(frozenset(cluster))
+    return clusters
+
+
 class GameWatcher:
     """Owns the rolling board-camera frame buffer; each call to
     `observe_board_frame`/`record_rack` advances `state` and returns a
@@ -252,28 +282,40 @@ class GameWatcher:
         self._confirmed_cells = (self._confirmed_cells | newly_confirmed) & current_cells
         self._last_candidate_cells = current_cells
 
-        if current_cells != self._confirmed_cells:
-            # At least one cell in this reading is brand new (or hasn't
-            # yet survived a second independent look) -- could be a
-            # completed turn, or a player mid-placement who just happened
-            # to pause, or one cell whose visibility is still marginal.
-            # Don't act yet; every cell needs to reappear at least once
-            # before it's trusted.
+        # board_before can genuinely have more than one turn's worth of
+        # unaccounted-for tiles new at once (e.g. a slow multi-tile word
+        # still being placed in one part of the board while a separate,
+        # already-stable cell elsewhere is also new) -- clustering by
+        # adjacency before checking confirmation means one still-forming
+        # cluster elsewhere never prevents a different, fully-confirmed
+        # cluster from being acted on. Only ever act on ONE cluster per
+        # call, matching the one-turn-per-observation model; if more than
+        # one happens to be fully confirmed simultaneously, the rest stay
+        # exactly as confirmed as they are now and get picked up (now
+        # against an updated board_before) on the next call.
+        ready_cluster = next(
+            (cluster for cluster in _cluster_cells(current_cells) if cluster and cluster <= self._confirmed_cells),
+            None,
+        )
+        if ready_cluster is None:
+            # No cluster has (yet) had every one of its cells survive a
+            # second independent look -- could be a completed turn, or a
+            # player mid-placement who just happened to pause, or one
+            # cell whose visibility is still marginal. Don't act yet.
             self.state = WatcherState.DIFF_COMPUTED
             return WatcherEvent(state=self.state)
 
-        # Confirmed: every cell in this reading has now been seen in (at
+        # Confirmed: every cell in this cluster has now been seen in (at
         # least) two consecutive settled observations -- the placement
         # has stopped growing, so it's safe to treat as a genuinely
         # completed turn. Confirmation state is deliberately NOT cleared
         # here yet -- only once we actually reach a scored outcome below.
-        # A confirmed set that fails validation/pool-check for an
-        # unrelated reason (e.g. one already-confirmed cell alongside a
-        # transient neighbor that made the combination briefly illegal)
-        # should stay confirmed for the next attempt, rather than forcing
-        # the whole two-observation wait to repeat from scratch every
-        # single time a transient neighbor spoils one retry.
+        # A confirmed cluster that fails validation/pool-check for an
+        # unrelated reason should stay confirmed for the next attempt,
+        # rather than forcing the whole two-observation wait to repeat
+        # from scratch every single time a retry fails.
         self.state = WatcherState.DIFF_COMPUTED
+        candidates = [cc for cc in candidates if cc.coord in ready_cluster]
 
         decoded = decode_feasible_reading(candidates, self.board, list(self.racks.values()))
         conf_by_coord = {cc.coord: dict(cc.candidates) for cc in candidates}

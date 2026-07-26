@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from autoscorer.api.session import GameSession
-from autoscorer.gamelogic.board import BOARD_SIZE, CENTER, PREMIUM_SQUARES
+from autoscorer.gamelogic.board import BOARD_SIZE, CENTER, PREMIUM_SQUARES, BoardState, Tile
 from autoscorer.gamelogic.models import MoveType
 from autoscorer.gamelogic.movedetect.game_watcher import GameWatcher, WatcherState
 from autoscorer.gamelogic.publish import PublishGateway, PublishMode
@@ -288,6 +288,56 @@ def test_a_marginal_cell_that_disappears_does_not_block_a_stable_placement(tmp_p
     assert final.state == WatcherState.APPLIED
     assert final.scored_move.candidate.new_cells == ((7, 7),)
     assert watcher.turn_number == 1
+
+
+def test_two_disconnected_confirmed_clusters_commit_separately_not_merged(tmp_path):
+    """Regression test for a third real failure found running this
+    against a complete real game: board_before can genuinely have more
+    than one turn's worth of unaccounted-for tiles new at once (a slow
+    multi-tile word still being placed in one part of the board while an
+    unrelated, already-stable cell elsewhere is also new). Both cells
+    could pass per-cell confirmation in the same observation, but
+    treating them as ONE combined placement fails validation forever
+    ("new tiles must lie in a single row or column") since they're
+    nowhere near each other -- confirmed cells must be clustered by
+    adjacency first, and only one cluster acted on per turn.
+    """
+    classifier = _train_tiny_classifier(tmp_path)
+    watcher = _make_watcher(classifier, mode=PublishMode.AUTONOMOUS)
+    rng = random.Random(21)
+
+    # Two pre-existing anchors, far apart -- stands in for a real board
+    # with tiles from earlier turns scattered across it.
+    watcher._board = BoardState({(7, 7): Tile("A"), (0, 5): Tile("N")})
+
+    # Two new cells, each legally adjacent to its own anchor but nowhere
+    # near each other -- exactly the "two different turns' worth of new
+    # tiles" scenario.
+    frame = _blank_board_image()
+    _place_tile(frame, 7, 8, "T", rng)
+    _place_tile(frame, 0, 6, "T", rng)
+
+    # 4 identical calls: settles on the 3rd (first sighting of both
+    # cells), confirms on the 4th -- both clusters confirmed together,
+    # exactly the scenario that used to fail.
+    events = [watcher.observe_board_frame(frame.copy(), player_id="p1") for _ in range(4)]
+    final = events[-1]
+
+    assert final.state == WatcherState.APPLIED, "one of the two legal clusters must commit, not fail validation"
+    assert len(final.scored_move.candidate.new_cells) == 1, "clusters must not be merged into one scattered placement"
+    committed_cell = final.scored_move.candidate.new_cells[0]
+    assert committed_cell in {(7, 8), (0, 6)}
+
+    # The other cluster's cell is still sitting there, unapplied -- one
+    # more settled look should pick it up as its own, separate turn.
+    other_cell = (0, 6) if committed_cell == (7, 8) else (7, 8)
+    assert watcher.board.is_empty(other_cell)
+
+    more_events = [watcher.observe_board_frame(frame.copy(), player_id="p2") for _ in range(2)]
+    second = more_events[-1]
+    assert second.state == WatcherState.APPLIED
+    assert second.scored_move.candidate.new_cells == (other_cell,)
+    assert watcher.turn_number == 2
 
 
 class _FakeRackDetector:
