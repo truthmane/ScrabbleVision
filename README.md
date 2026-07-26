@@ -230,6 +230,12 @@ An ML-powered auto-annotator for livestreamed Scrabble games
   plus an empty-input test. Measured directly against a real 7-cell turn
   from the Game 1 broadcast: 2.81s total (down from the ~5s/frame,
   per-crop-call baseline this was written to fix). 234 tests passing.
+  **Confirmed end-to-end**: re-ran the entire ~37-minute Game 1
+  broadcast with this change and got byte-for-byte identical detection
+  output (same 11 events, same final 52-cell board, same scores
+  376/252) in **1293.5s, down from the pre-batching run's 2059.0s** --
+  a real 37% wall-clock reduction on the exact same real video, not
+  just a synthetic microbenchmark.
 - **First full end-to-end completion of a complete real game.** Re-ran
   with all six fixes (adding the blended-reference refinement above) and
   the pipeline processed the entire ~37-minute broadcast start to finish
