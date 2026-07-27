@@ -303,6 +303,44 @@ Estimates are labeled as such; each step gates on the golden eval before the nex
 lands under ~55%, stop and re-audit the pipeline for another mechanical bug (the BGR/RGB and
 leakage incidents earn that paranoia) before adding data.
 
+## Round 2 of real data: venue-disjoint retrain, 81.0% → 85.1%, and a lost-dataset lesson
+
+The dataset this section's earlier 64.6%/76.0% numbers were measured against **no longer
+exists** — it lived only in an ephemeral per-session scratchpad and was never persisted
+anywhere durable, so a later session lost it outright. Fixed going forward:
+`training/data/real_tiles/` is now committed to the repo (that directory's own README has the
+full per-venue provenance) specifically so a checkpoint's training data stays inspectable and
+extendable, not just the checkpoint itself.
+
+**513 new real tiles harvested this round**, across two genuinely new venues, both calibrated
+via the new `training/collect/click_calibrate.py` tool (see `training/collect/README.md`
+section 3b for why that tool exists — 7 automated calibration methods failed on one of these
+venues first):
+- Causeway Challenge 2026 (Bangkok), two distinct physical tables — 121 tiles.
+- 2026 Scrabble Players Championship, 4 of Mack Meller's own games — 392 tiles, ground truth
+  pulled directly from `cross-tables.com` GCG files via his own per-player "Annotated Games"
+  page (`cross-tables.com/anno.php?p=<id>`, every row has both a GCG and a stream link — a
+  better discovery mechanism than searching by tournament).
+
+**Honest measurement, venue-disjoint** (not just game-disjoint): held out *all* Causeway tiles
+entirely (both tables), fine-tuned only on the 4 Mack Meller games. The pre-fine-tune checkpoint
+scored **81.0% (98/121)** on held-out Causeway already (a real, if partial, sign the earlier
+diverse training generalizes). After fine-tuning: **85.1% (103/121)** — a genuine +4.1 point
+lift from real venue diversity, not an artifact of an easier test set (same 121 tiles both
+times).
+
+**Catastrophic forgetting, measured, not assumed.** The "normal" fine-tune settings used
+historically for this project (8 epochs, `lr=1e-3`) *regressed* held-out accuracy to 72.7% —
+worse than the untouched baseline. With the old ~620-tile dataset gone, there's no way to mix
+old and new data in one training run anymore, so an aggressive continuation overfits hard to
+just the one new venue's specific look (all-black tiles, one font) at the expense of everything
+previously learned. A much gentler continuation (2 epochs, `lr=1e-4`) is what actually produced
+the real win; this is the setting to start from on any future continuation fine-tune of this
+checkpoint, verified against a real held-out venue before trusting it — `train.py`'s own
+reported "final validation accuracy" hit 100% in every one of these runs (an in-distribution
+split of the new data alone) and was completely uninformative about which setting actually
+helped or hurt generalization.
+
 ## Pitfalls for the implementer (learned the hard way in this repo)
 
 - BGR (OpenCV, perception layer) vs RGB (PIL, training) — convert exactly once, at the

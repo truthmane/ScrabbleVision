@@ -8,20 +8,33 @@ The per-cell letter classifier described in `docs/classifier-accuracy-plan.md`.
   first conv adapted to 1-channel input) — see `training/classify/model.py`.
 - **Classes**: 27 (`A`-`Z` + `BLANK`), in the order stored in the checkpoint's `classes` list.
   Always read this list back from the checkpoint rather than assuming an order.
-- **Calibration**: temperature-scaled, `T ≈ 1.352` (stored in the checkpoint; applied
+- **Calibration**: temperature-scaled, `T ≈ 1.171` (stored in the checkpoint; applied
   automatically by `TileClassifierModel`, see below). Fitted on the same held-out set used to
   report accuracy — see the calibration caveat in `training/classify/calibrate.py`'s docstring.
 - **Training data**: synthetic renders (`training/synth_render`) pretrained, then fine-tuned on
-  ~620 real tile crops pulled from broadcast footage across **6 tournament productions/venues**
-  (2 earlier broadcast productions + 4 real 2026 NASPA Scrabble Players Championship games,
-  auto-labeled via WS3's GCG-replay pipeline — see `docs/classifier-accuracy-plan.md`).
-- **Honest accuracy**: **64.6%** (64/99) on a *game-disjoint* held-out set — 3 entire games/tables
-  never touched during training, not just random held-out tiles (up from 60.6% before the WS3
-  data — see the accuracy-plan doc's WS3 section for the honest story of what did and didn't move
-  this number: venue diversity mattered, raw frame volume from one venue did not). Board-tile
-  accuracy is meaningfully higher (~72%) than rack-tile accuracy (~46%); see the accuracy-plan doc
-  for why (rack crops currently come from looser manual bounding boxes, not the board's calibrated
-  per-cell homography).
+  real tile crops now committed at `training/data/real_tiles/` (513 tiles as of this checkpoint,
+  see that directory's own README for exact per-venue provenance) — **the previous ~620-tile
+  dataset this checkpoint's predecessor was built from no longer exists**; it lived only in an
+  ephemeral per-session scratchpad and was lost between sessions. `training/data/real_tiles/` is
+  committed specifically so this can't happen again — the actual data a checkpoint depends on
+  should always be inspectable/extendable, not just the checkpoint itself.
+- **Honest accuracy**: **85.1%** (103/121) on a *venue-disjoint* held-out set — all Causeway
+  Challenge 2026 tiles (both tables) held out entirely, fine-tuned only on the 4 Mack Meller
+  2026 Scrabble Players Championship games (392 tiles), a real venue/camera the held-out set
+  never touched. Baseline (the pre-fine-tune checkpoint, before this session's data) scored
+  **81.0%** (98/121) on the exact same held-out set — so the honest lift from this round of real
+  data is +4.1 points, not the full 85.1%.
+- **Catastrophic forgetting is real here and worth remembering for the next retrain**: an
+  identical fine-tune at the "normal" settings used historically (8 epochs, `lr=1e-3`) actively
+  *regressed* held-out accuracy to 72.7% — it overfit hard to the one new venue's specific tile
+  style (all-black tiles, one font) at the expense of everything the checkpoint previously knew,
+  since there's no way to mix in the lost old dataset alongside the new one anymore. A much
+  gentler continuation (2 epochs, `lr=1e-4`) was what actually produced the +4.1 point real win
+  above; 1 epoch at the same `lr` scored 84.3%, slightly behind 2. Try gentle settings first on
+  any future continuation fine-tune from this checkpoint, and always A/B against a real held-out
+  venue before trusting a "final validation accuracy" number from `train.py` itself (that number
+  is an in-distribution split of the *new* training data alone and was 100% in every run tried
+  here, completely uninformative about generalization).
 - **Not yet production-ready**: this is a checkpoint from an active accuracy-improvement pass,
   not a finished model. The confidence-fallback publish gateway (`PublishMode
   .AUTONOMOUS_WITH_CONFIDENCE_FALLBACK`) exists specifically so a model at this accuracy level
