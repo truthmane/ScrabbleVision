@@ -161,6 +161,55 @@ def test_run_watcher_on_video_resolves_lexicon_from_venue_profile_or_override(tm
         run_watcher_module.load_lexicon = original_load_lexicon
 
 
+def test_run_watcher_on_video_derives_still_frame_count_from_still_seconds_and_sample_fps(tmp_path):
+    """Regression test for the real bug this whole mechanism exists to
+    prevent: a venue profile's raw still_frame_count has no fixed
+    real-world meaning without knowing the rate it was calibrated
+    against, and a CLI defaulting to a different sample_fps than a
+    profile was tuned at silently changes what "settled" means -- this
+    produced a full evening of what looked exactly like a code
+    regression before being traced back to the actual cause. With
+    still_seconds set, the frame count actually used must be derived
+    from the real sample_fps a run passes in, not the profile's raw
+    (and now purely informational) still_frame_count field.
+    """
+    checkpoint_path = _train_tiny_classifier(tmp_path)
+    reference = _blank_board_image()
+    frames = [reference.copy() for _ in range(4)]
+    video_path = tmp_path / "empty.mkv"
+    _write_video(video_path, frames)
+    reference_path = tmp_path / "reference.png"
+    cv2.imwrite(str(reference_path), reference)
+    profile = VenueProfile(
+        name="timed_test_venue", corners=IDENTITY_CORNERS,
+        still_frame_count=999,  # must be ignored once still_seconds is set
+        still_seconds=2.5, reference_board_path=str(reference_path),
+    )
+    save_venue_profile(profile, directory=tmp_path)
+
+    import autoscorer.perception.capture.run_watcher as run_watcher_module
+    original_loader = run_watcher_module.load_venue_profile
+    original_game_watcher = run_watcher_module.GameWatcher
+    captured = {}
+
+    class _SpyGameWatcher(original_game_watcher):
+        def __init__(self, *args, **kwargs):
+            captured["still_frame_count"] = kwargs.get("still_frame_count")
+            super().__init__(*args, **kwargs)
+
+    run_watcher_module.load_venue_profile = lambda name: original_loader(name, directory=tmp_path)
+    run_watcher_module.GameWatcher = _SpyGameWatcher
+    try:
+        run_watcher_on_video(
+            video_path, "timed_test_venue", checkpoint_path, "Alice", "Bob",
+            sample_fps=2.0, mode=PublishMode.AUTONOMOUS,
+        )
+        assert captured["still_frame_count"] == 5  # 2.5s * 2.0fps, not the raw 999
+    finally:
+        run_watcher_module.load_venue_profile = original_loader
+        run_watcher_module.GameWatcher = original_game_watcher
+
+
 def test_format_event_includes_score_and_status_for_a_play():
     from autoscorer.gamelogic.models import MoveCandidate, ScoredMove
     from autoscorer.gamelogic.movedetect.game_watcher import WatcherEvent, WatcherState

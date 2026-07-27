@@ -98,6 +98,75 @@ def test_lexicon_defaults_to_none():
     assert profile.lexicon is None
 
 
+def test_still_seconds_defaults_to_none():
+    profile = _sample_profile()
+    assert profile.still_seconds is None
+
+
+def test_still_seconds_round_trips_through_save_and_load(tmp_path):
+    profile = VenueProfile(
+        name="timed_venue",
+        corners=((0.0, 0.0), (500.0, 0.0), (500.0, 500.0), (0.0, 500.0)),
+        still_frame_count=5,
+        still_seconds=25.0,
+    )
+    save_venue_profile(profile, directory=tmp_path)
+    loaded = load_venue_profile("timed_venue", directory=tmp_path)
+    assert loaded.still_seconds == 25.0
+
+
+def test_a_saved_profile_without_a_still_seconds_key_still_loads(tmp_path):
+    """Same backward-compat guarantee as the lexicon field -- older saved
+    profiles predate this key."""
+    import json
+    profile = _sample_profile("legacy_timing_venue")
+    data = profile.to_dict()
+    del data["still_seconds"]
+    (tmp_path / "legacy_timing_venue.json").write_text(json.dumps(data))
+
+    loaded = load_venue_profile("legacy_timing_venue", directory=tmp_path)
+    assert loaded.still_seconds is None
+
+
+def test_effective_still_frame_count_falls_back_to_raw_count_when_still_seconds_unset():
+    profile = _sample_profile()  # still_frame_count=4, still_seconds=None
+    assert profile.effective_still_frame_count(sample_fps=2.0) == 4
+    assert profile.effective_still_frame_count(sample_fps=0.2) == 4
+
+
+def test_effective_still_frame_count_derives_from_still_seconds_and_the_real_rate():
+    """The actual bug this exists to prevent: a still_frame_count alone
+    means a different real duration at every different sample_fps. With
+    still_seconds set, the derived frame count must scale so the real
+    stillness window stays constant regardless of rate."""
+    profile = VenueProfile(
+        name="timed_venue",
+        corners=((0.0, 0.0), (500.0, 0.0), (500.0, 500.0), (0.0, 500.0)),
+        still_seconds=25.0,
+    )
+    assert profile.effective_still_frame_count(sample_fps=0.2) == 5
+    assert profile.effective_still_frame_count(sample_fps=2.0) == 50
+    assert profile.effective_still_frame_count(sample_fps=1.0) == 25
+
+
+def test_effective_still_frame_count_never_derives_zero_frames():
+    profile = VenueProfile(
+        name="timed_venue",
+        corners=((0.0, 0.0), (500.0, 0.0), (500.0, 500.0), (0.0, 500.0)),
+        still_seconds=1.0,
+    )
+    assert profile.effective_still_frame_count(sample_fps=0.1) == 1
+
+
+def test_real_wespa_profile_has_still_seconds_recorded():
+    # Pins the migration: still_frame_count=5 was calibrated at the 0.2
+    # fps every run against this venue actually used, i.e. 25 real
+    # seconds -- must be recorded, not left implicit.
+    profile = load_venue_profile("wespa_word_wars")
+    assert profile.still_seconds == 25.0
+    assert profile.effective_still_frame_count(sample_fps=0.2) == profile.still_frame_count
+
+
 def test_lexicon_round_trips_through_save_and_load(tmp_path):
     profile = VenueProfile(
         name="csw_venue",

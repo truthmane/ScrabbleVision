@@ -20,6 +20,7 @@
   ],
   "motion_threshold": 10.0,
   "still_frame_count": 5,
+  "still_seconds": 25.0,
   "occupancy_diff_threshold": 38.0,
   "occupancy_gradient_threshold": 500.0,
   "reference_board_path": "/private/tmp/claude-501/-Users-etbrosowsky-AutoScorer/8adc8296-ba33-4f8c-8627-15220e0d1083/scratchpad/venue_references/wespa_word_wars_reference.jpg",

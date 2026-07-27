@@ -131,26 +131,37 @@ def run_watcher_on_video(
     classifier = TileClassifierModel(classifier_path, device=device)
     lexicon = load_lexicon(lexicon_name or profile.lexicon)
 
-    watcher_kwargs = dict(
-        calibration=profile.calibration(),
-        reference_board=profile.load_reference_board(),
-        classifier=classifier,
-        motion_threshold=profile.motion_threshold,
-        still_frame_count=profile.still_frame_count,
-        occupancy_diff_threshold=profile.occupancy_diff_threshold,
-        occupancy_gradient_threshold=profile.occupancy_gradient_threshold,
-        lexicon=lexicon,
-    )
-    if session is not None:
-        watcher = GameWatcher(session=session, **watcher_kwargs)
-    else:
-        gateway = PublishGateway(mode=mode, confidence_threshold=confidence_threshold)
-        watcher = GameWatcher(publish_gateway=gateway, **watcher_kwargs)
-
     current_player, other_player = player1_id, player2_id
     events: List[WatcherEvent] = []
 
     with VideoFrameSource(video_path, sample_fps=sample_fps) as source:
+        # The stillness gate is only meaningful in real wall-clock terms,
+        # and this is the one place that actually knows the rate frames
+        # will arrive at -- `sample_fps=None` means every native frame is
+        # used, so the true rate is the video's own fps, not "no rate at
+        # all". See `VenueProfile.still_seconds`'s docstring for the real
+        # bug this fixes: a profile's `still_frame_count` alone has no
+        # fixed real-world meaning without knowing what rate it was
+        # calibrated against.
+        effective_fps = sample_fps if sample_fps else source.native_fps
+        still_frame_count = profile.effective_still_frame_count(effective_fps)
+
+        watcher_kwargs = dict(
+            calibration=profile.calibration(),
+            reference_board=profile.load_reference_board(),
+            classifier=classifier,
+            motion_threshold=profile.motion_threshold,
+            still_frame_count=still_frame_count,
+            occupancy_diff_threshold=profile.occupancy_diff_threshold,
+            occupancy_gradient_threshold=profile.occupancy_gradient_threshold,
+            lexicon=lexicon,
+        )
+        if session is not None:
+            watcher = GameWatcher(session=session, **watcher_kwargs)
+        else:
+            gateway = PublishGateway(mode=mode, confidence_threshold=confidence_threshold)
+            watcher = GameWatcher(publish_gateway=gateway, **watcher_kwargs)
+
         for i, frame in enumerate(source):
             if max_frames is not None and i >= max_frames:
                 break

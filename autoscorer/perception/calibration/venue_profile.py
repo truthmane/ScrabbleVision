@@ -68,6 +68,23 @@ class VenueProfile:
     corners: Tuple[Corner, Corner, Corner, Corner]
     motion_threshold: float = DEFAULT_MOTION_THRESHOLD
     still_frame_count: int = DEFAULT_STILL_FRAME_COUNT
+    still_seconds: Optional[float] = None
+    """The REAL calibrated meaning of the stillness gate, in wall-clock
+    seconds -- e.g. 25.0 for WESPA (5 frames at the 0.2 fps every
+    calibration run for that venue actually used). `still_frame_count`
+    alone is a frame COUNT with no fixed real-world meaning: the same 5
+    frames means 25s of stillness at 0.2 fps but only 2.5s at 2.0 fps,
+    and at 2.5s a player's ordinary pause between placing individual
+    tiles reads as "the turn is over," fragmenting real multi-tile words
+    -- a real, measured bug (a CLI defaulting to the wrong fps produced
+    hours of what looked exactly like a code regression before this was
+    found). When set, this is authoritative: `effective_still_frame_count`
+    derives the actual frame count from whatever sample_fps a run is
+    using, so the gate means the same thing regardless of rate.  `None`
+    (the default, for a profile that hasn't recorded this yet) falls back
+    to the raw `still_frame_count` field, unconverted -- re-derive and set
+    this for any profile whose `still_frame_count` was ever tuned against
+    a specific, known sample_fps."""
     occupancy_diff_threshold: float = DEFAULT_DIFF_THRESHOLD
     occupancy_gradient_threshold: float = DEFAULT_GRADIENT_THRESHOLD
     reference_board_path: Optional[str] = None
@@ -82,6 +99,16 @@ class VenueProfile:
 
     def calibration(self) -> BoardCalibration:
         return calibrate_from_corners(self.corners)
+
+    def effective_still_frame_count(self, sample_fps: float) -> int:
+        """The frame count `GameWatcher`'s stillness gate should actually
+        use, given the real sampling rate a run is using -- see
+        `still_seconds`'s docstring for why this can't just be the raw
+        `still_frame_count` field. Rounds to the nearest frame, floored
+        at 1 (a gate requiring zero frames is meaningless)."""
+        if self.still_seconds is not None:
+            return max(1, round(self.still_seconds * sample_fps))
+        return self.still_frame_count
 
     def load_reference_board(self) -> Union[np.ndarray, List[np.ndarray]]:
         """Reads the real, rectified empty-board reference photo(s) this
@@ -113,6 +140,7 @@ class VenueProfile:
             "corners": [list(c) for c in self.corners],
             "motion_threshold": self.motion_threshold,
             "still_frame_count": self.still_frame_count,
+            "still_seconds": self.still_seconds,
             "occupancy_diff_threshold": self.occupancy_diff_threshold,
             "occupancy_gradient_threshold": self.occupancy_gradient_threshold,
             "reference_board_path": self.reference_board_path,
@@ -131,6 +159,7 @@ class VenueProfile:
             corners=corners,
             motion_threshold=data.get("motion_threshold", DEFAULT_MOTION_THRESHOLD),
             still_frame_count=data.get("still_frame_count", DEFAULT_STILL_FRAME_COUNT),
+            still_seconds=data.get("still_seconds"),
             occupancy_diff_threshold=data.get("occupancy_diff_threshold", DEFAULT_DIFF_THRESHOLD),
             occupancy_gradient_threshold=data.get("occupancy_gradient_threshold", DEFAULT_GRADIENT_THRESHOLD),
             reference_board_path=data.get("reference_board_path"),
