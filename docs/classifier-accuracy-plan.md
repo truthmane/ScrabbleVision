@@ -341,6 +341,48 @@ reported "final validation accuracy" hit 100% in every one of these runs (an in-
 split of the new data alone) and was completely uninformative about which setting actually
 helped or hurt generalization.
 
+## Round 3 of real data: 7 more games, 85.1% → 91.7%, and from-scratch training loses to incremental
+
+**680 more real tiles harvested**, across 7 genuinely distinct games discovered via
+cross-tables.com's per-player "Annotated Games" pages (`anno.php?p=6003`, the same discovery
+mechanism as round 2). The user personally screenshotted each game's end-state board (10
+candidates pulled, 3 declared untenable and dropped). Each screenshot was matched back to its
+source `.gcg` by cross-referencing distinctive board words against the GCG's actual move list —
+**not assumed from list order**: a naive `grep` for expected words gave one false negative,
+because GCG move lines often represent a shared/crossing letter as a `.` placeholder rather than
+spelling the whole formed word out, so a literal text search can legitimately miss a real match.
+Resolved by reconstructing the actual board and checking there instead of trusting grep.
+
+Two of these seven `.gcg` files broke the existing strict, score-validating replay
+(`replay_game.replay_gcg_game`) outright: one logs a withdrawn/retaken play as its own line
+(`word == "--"`) without ever undoing the prior placement (a later real play across the same
+squares then looks like an illegal double-placement); another spells a crossing word out in full
+instead of using `.` for a cell an earlier play already filled (same false-double-placement
+symptom, different cause). Fixed with a new, tolerant `board_from_gcg_final` in
+`click_calibrate.py` (new `--gcg-final` CLI flag) that undoes withdrawn plays and accepts a
+same-letter "conflict" silently — it does no score validation at all, existing purely to answer
+"what does the final board look like" for a single end-state photo with full GCG ground truth.
+
+**Honest measurement, same held-out set as round 2** (all Causeway tiles, both tables, still
+never trained on): a gentle incremental continuation (2 epochs, `lr=1e-4`) from the round-2
+checkpoint on just the 680 new tiles took held-out accuracy **85.1% (103/121) → 91.7% (111/121)**.
+
+**Also tried, per explicit request: training from scratch on the full real dataset instead of
+continuing incrementally.** All 1,072 non-held-out real tiles (513 from round 2 + 680 from this
+round) at once, from a fresh ImageNet-pretrained backbone (no init checkpoint) — the hypothesis
+being that a from-scratch run isn't limited by whatever the existing checkpoint already learned,
+so it might generalize better. It did **much worse**, at every setting tried: 53.7% (8 epochs,
+`lr=1e-3`, the historically "normal" full-training settings) and 66.1% (15 epochs, `lr=3e-4`) —
+both far below the 91.7% the incremental continuation reached. Most likely explanation: this
+checkpoint's lineage went through a synthetic-render pretraining stage before ever seeing a real
+photo (`training/synth_render`), and training from scratch on real tiles alone skips that
+foundation entirely; 1,072 real crops split across 27 classes (many classes under 50 examples)
+just isn't enough signal on its own to learn 27-way tile classification from raw ImageNet weights
+in a handful of epochs, no matter how the learning rate is tuned. **The lesson now holds across
+two independent rounds**: a gentle continuation from the current checkpoint beats both aggressive
+continuation settings (round 2's 72.7% regression) and training from scratch on the full dataset
+(this round's 53.7%/66.1%). Recalibrated temperature to `T ≈ 1.078`; checkpoint promoted.
+
 ## Pitfalls for the implementer (learned the hard way in this repo)
 
 - BGR (OpenCV, perception layer) vs RGB (PIL, training) — convert exactly once, at the

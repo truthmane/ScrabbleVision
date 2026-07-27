@@ -8,33 +8,38 @@ The per-cell letter classifier described in `docs/classifier-accuracy-plan.md`.
   first conv adapted to 1-channel input) — see `training/classify/model.py`.
 - **Classes**: 27 (`A`-`Z` + `BLANK`), in the order stored in the checkpoint's `classes` list.
   Always read this list back from the checkpoint rather than assuming an order.
-- **Calibration**: temperature-scaled, `T ≈ 1.171` (stored in the checkpoint; applied
+- **Calibration**: temperature-scaled, `T ≈ 1.078` (stored in the checkpoint; applied
   automatically by `TileClassifierModel`, see below). Fitted on the same held-out set used to
   report accuracy — see the calibration caveat in `training/classify/calibrate.py`'s docstring.
-- **Training data**: synthetic renders (`training/synth_render`) pretrained, then fine-tuned on
-  real tile crops now committed at `training/data/real_tiles/` (513 tiles as of this checkpoint,
-  see that directory's own README for exact per-venue provenance) — **the previous ~620-tile
-  dataset this checkpoint's predecessor was built from no longer exists**; it lived only in an
-  ephemeral per-session scratchpad and was lost between sessions. `training/data/real_tiles/` is
-  committed specifically so this can't happen again — the actual data a checkpoint depends on
-  should always be inspectable/extendable, not just the checkpoint itself.
-- **Honest accuracy**: **85.1%** (103/121) on a *venue-disjoint* held-out set — all Causeway
-  Challenge 2026 tiles (both tables) held out entirely, fine-tuned only on the 4 Mack Meller
-  2026 Scrabble Players Championship games (392 tiles), a real venue/camera the held-out set
-  never touched. Baseline (the pre-fine-tune checkpoint, before this session's data) scored
-  **81.0%** (98/121) on the exact same held-out set — so the honest lift from this round of real
-  data is +4.1 points, not the full 85.1%.
-- **Catastrophic forgetting is real here and worth remembering for the next retrain**: an
-  identical fine-tune at the "normal" settings used historically (8 epochs, `lr=1e-3`) actively
-  *regressed* held-out accuracy to 72.7% — it overfit hard to the one new venue's specific tile
-  style (all-black tiles, one font) at the expense of everything the checkpoint previously knew,
-  since there's no way to mix in the lost old dataset alongside the new one anymore. A much
-  gentler continuation (2 epochs, `lr=1e-4`) was what actually produced the +4.1 point real win
-  above; 1 epoch at the same `lr` scored 84.3%, slightly behind 2. Try gentle settings first on
-  any future continuation fine-tune from this checkpoint, and always A/B against a real held-out
-  venue before trusting a "final validation accuracy" number from `train.py` itself (that number
-  is an in-distribution split of the *new* training data alone and was 100% in every run tried
-  here, completely uninformative about generalization).
+- **Training data**: synthetic renders (`training/synth_render`) pretrained, then fine-tuned
+  incrementally on real tile crops now committed at `training/data/real_tiles/` (1,193 tiles as
+  of this checkpoint, see that directory's own README for exact per-venue provenance) — **the
+  previous ~620-tile dataset this checkpoint's predecessor was built from no longer exists**; it
+  lived only in an ephemeral per-session scratchpad and was lost between sessions.
+  `training/data/real_tiles/` is committed specifically so this can't happen again — the actual
+  data a checkpoint depends on should always be inspectable/extendable, not just the checkpoint
+  itself.
+- **Honest accuracy**: **91.7%** (111/121) on a *venue-disjoint* held-out set — all Causeway
+  Challenge 2026 tiles (both tables) held out entirely; the model is a chain of two incremental
+  continuation fine-tunes, first on the 4 Mack Meller 2026 SPC games (392 tiles, 81.0% → 85.1% on
+  this same held-out set), then on 7 more cross-tables.com games (680 tiles, 85.1% → 91.7%) —
+  none of these training venues ever touch the held-out set.
+- **Catastrophic forgetting is real here, confirmed on two separate rounds now.** An identical
+  fine-tune at the "normal" settings used historically (8 epochs, `lr=1e-3`) actively *regressed*
+  held-out accuracy the first time this was tried (round 1: 72.7%, vs. 85.1% with gentle
+  settings). Round 2 went further and tested training **from scratch on the full real dataset**
+  (ImageNet-init, no continuation checkpoint, all 1,072 non-held-out real tiles at once) instead
+  of incremental continuation — expecting this might do better since it isn't limited by whatever
+  the previous checkpoint already learned. It did much *worse*: 53.7% at 8 epochs/`lr=1e-3`, 66.1%
+  at 15 epochs/`lr=3e-4` — both far below the 91.7% the incremental continuation reached, most
+  likely because training from scratch this way skips the synthetic-render pretraining stage this
+  checkpoint's lineage benefited from, and 1,072 real crops split ~27 ways just isn't enough
+  signal to learn 27-way tile classification unaided. **The lesson holds across two independent
+  rounds: a gentle (2 epoch, `lr=1e-4`) continuation from the current checkpoint beats both
+  aggressive continuation settings AND training from scratch on the full dataset.** Always A/B
+  against a real held-out venue before trusting a "final validation accuracy" number from
+  `train.py` itself (that number is an in-distribution split of the *new* training data alone and
+  is uninformative about generalization on its own).
 - **Not yet production-ready**: this is a checkpoint from an active accuracy-improvement pass,
   not a finished model. The confidence-fallback publish gateway (`PublishMode
   .AUTONOMOUS_WITH_CONFIDENCE_FALLBACK`) exists specifically so a model at this accuracy level
