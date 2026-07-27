@@ -16,8 +16,10 @@ from training.collect.click_calibrate import (
     build_spotcheck_montage,
     fit_homography_from_clicks,
     generate_click_tool_html,
+    generate_multi_click_tool_html,
     harvest_labeled_cells,
     load_frame,
+    load_manifest,
     pick_calibration_targets,
     pick_fixed_board_targets,
 )
@@ -224,6 +226,51 @@ def test_board_from_gcg_final_warns_but_keeps_new_letter_on_genuine_conflict(tmp
 
     assert board.get((7, 7)) == Tile("D")  # last write wins
     assert "warning" in capsys.readouterr().out.lower()
+
+
+def test_load_manifest_rejects_duplicate_board_names(tmp_path):
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps([
+        {"name": "g1", "image": "a.png"},
+        {"name": "g1", "image": "b.png"},
+    ]))
+
+    with pytest.raises(ValueError, match="duplicate"):
+        load_manifest(manifest_path)
+
+
+def test_load_manifest_rejects_empty_list(tmp_path):
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text("[]")
+
+    with pytest.raises(ValueError, match="empty"):
+        load_manifest(manifest_path)
+
+
+def test_load_manifest_returns_entries_unchanged(tmp_path):
+    manifest_path = tmp_path / "manifest.json"
+    entries = [{"name": "g1", "image": "a.png", "gcg": "a.gcg", "move": 5}]
+    manifest_path.write_text(json.dumps(entries))
+
+    assert load_manifest(manifest_path) == entries
+
+
+def test_generate_multi_click_tool_html_embeds_every_board(tmp_path):
+    image1 = np.zeros((10, 10, 3), dtype=np.uint8)
+    image2 = np.full((10, 10, 3), 255, dtype=np.uint8)
+    boards = [
+        ("board_one", image1, [CalibrationTarget(row=0, col=0, label="A")]),
+        ("board_two", image2, [CalibrationTarget(row=1, col=1, label="B")]),
+    ]
+    out_html = tmp_path / "multi.html"
+
+    generate_multi_click_tool_html(boards, out_html)
+
+    content = out_html.read_text()
+    assert "board_one" in content
+    assert "board_two" in content
+    # both images' base64 data must be embedded, not just the first
+    assert content.count("data:image/jpeg;base64,") == 2
 
 
 def test_generate_click_tool_html_embeds_targets_and_image(tmp_path):

@@ -327,6 +327,150 @@ def _image_to_base64_data_uri(image: np.ndarray) -> str:
     return f"data:image/jpeg;base64,{base64.b64encode(encoded.tobytes()).decode('ascii')}"
 
 
+def generate_multi_click_tool_html(
+    boards: List[Tuple[str, np.ndarray, List[CalibrationTarget]]], out_html: Path,
+) -> None:
+    """Same idea as `generate_click_tool_html`, but walks a human through
+    every board in `boards` (each a `(name, image, targets)` triple) back
+    to back on one page, advancing to the next board's image automatically
+    once the current board's targets are all clicked -- built specifically
+    so collecting a whole batch of games needs one copy-paste at the end
+    instead of one per board. Output is a single JSON object keyed by each
+    board's `name`, in the exact shape `harvest`'s `--clicks` (or
+    `multi-harvest`'s single combined file) expects for that board.
+    """
+    boards_json = json.dumps([
+        {
+            "name": name,
+            "image": _image_to_base64_data_uri(image),
+            "targets": [{"row": t.row, "col": t.col, "label": t.label, "notation": t.notation} for t in targets],
+        }
+        for name, image, targets in boards
+    ])
+    html = f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>calibration clicker (batch)</title>
+<style>
+  body {{ margin:0; background:#181818; color:#eee; font-family: system-ui, sans-serif; }}
+  #bar {{ position:sticky; top:0; background:#000; padding:12px 16px; font-size:18px; z-index:10; }}
+  #bar b {{ color:#7ee787; }}
+  #board-name {{ color:#79c0ff; }}
+  #wrap {{ position:relative; display:inline-block; }}
+  img {{ display:block; max-width:none; }}
+  .mark {{ position:absolute; width:14px; height:14px; border:2px solid #ff5555;
+           border-radius:50%; margin-left:-7px; margin-top:-7px; pointer-events:none;
+           box-shadow:0 0 4px #000; }}
+  .mark span {{ position:absolute; left:16px; top:-6px; color:#ff5555; font-weight:bold;
+                background:#000; padding:0 3px; border-radius:3px; white-space:nowrap; }}
+  #done {{ padding:16px; }}
+  textarea {{ width:90%; height:300px; font-family:monospace; font-size:13px; }}
+  #rotate-btn {{ margin-left:12px; }}
+  #img {{ transform-origin: center center; }}
+</style></head>
+<body>
+<div id="bar">Board <b><span id="board-name">?</span></b>
+  (<span id="board-idx">0</span> / <span id="board-total">0</span>) &mdash;
+  click <b><span id="target-notation">?</span></b> (<span id="target-label">?</span>)
+  (<span id="target-idx">0</span> / <span id="target-total">0</span>) &mdash;
+  zoom with ctrl/cmd+scroll before clicking for precision.
+  <button id="rotate-btn" type="button">&#8635; Rotate view</button>
+</div>
+<div id="wrap"><img id="img" src=""></div>
+<div id="done" style="display:none">
+  <h3>All boards done. Copy this JSON (one blob for every board) for the harvest step:</h3>
+  <textarea id="output" readonly></textarea>
+</div>
+<script>
+const boards = {boards_json};
+let boardIdx = 0;
+let idx = 0;
+let viewRotation = 0;
+const allResults = {{}};
+let results = [];
+const img = document.getElementById('img');
+const wrap = document.getElementById('wrap');
+
+document.getElementById('rotate-btn').addEventListener('click', () => {{
+  if (idx > 0) {{
+    alert('Rotate before the first click of this board, not partway through.');
+    return;
+  }}
+  viewRotation = (viewRotation + 90) % 360;
+  img.style.transform = 'rotate(' + viewRotation + 'deg)';
+}});
+
+function loadBoard() {{
+  viewRotation = 0;
+  img.style.transform = '';
+  [...wrap.querySelectorAll('.mark')].forEach(m => m.remove());
+  idx = 0;
+  results = [];
+  const board = boards[boardIdx];
+  img.src = board.image;
+  document.getElementById('board-name').textContent = board.name;
+  document.getElementById('board-idx').textContent = boardIdx + 1;
+  document.getElementById('board-total').textContent = boards.length;
+  updateBar();
+}}
+
+function updateBar() {{
+  const targets = boards[boardIdx].targets;
+  if (idx >= targets.length) {{
+    allResults[boards[boardIdx].name] = results.map((r, i) => ({{row: targets[i].row, col: targets[i].col, x: r[0], y: r[1]}}));
+    boardIdx += 1;
+    if (boardIdx >= boards.length) {{
+      document.getElementById('bar').style.display = 'none';
+      document.getElementById('wrap').style.display = 'none';
+      document.getElementById('done').style.display = 'block';
+      document.getElementById('output').value = JSON.stringify(allResults, null, 2);
+      return;
+    }}
+    loadBoard();
+    return;
+  }}
+  document.getElementById('target-notation').textContent = targets[idx].notation;
+  document.getElementById('target-label').textContent = targets[idx].label;
+  document.getElementById('target-idx').textContent = idx + 1;
+  document.getElementById('target-total').textContent = targets.length;
+}}
+
+img.addEventListener('click', (e) => {{
+  const targets = boards[boardIdx].targets;
+  if (idx >= targets.length) return;
+  const rect = img.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  const dx = e.clientX - cx;
+  const dy = e.clientY - cy;
+  const rad = -viewRotation * Math.PI / 180;
+  const localX = dx * Math.cos(rad) - dy * Math.sin(rad);
+  const localY = dx * Math.sin(rad) + dy * Math.cos(rad);
+  const layoutW = img.offsetWidth, layoutH = img.offsetHeight;
+  const scaleX = img.naturalWidth / layoutW;
+  const scaleY = img.naturalHeight / layoutH;
+  const nativeX = (localX + layoutW / 2) * scaleX;
+  const nativeY = (localY + layoutH / 2) * scaleY;
+  results.push([nativeX, nativeY]);
+
+  const mark = document.createElement('div');
+  mark.className = 'mark';
+  mark.style.left = (e.clientX - rect.left) + 'px';
+  mark.style.top = (e.clientY - rect.top) + 'px';
+  const lbl = document.createElement('span');
+  lbl.textContent = (idx+1) + ':' + targets[idx].notation;
+  mark.appendChild(lbl);
+  wrap.appendChild(mark);
+
+  idx += 1;
+  updateBar();
+}});
+
+loadBoard();
+</script>
+</body></html>
+"""
+    Path(out_html).write_text(html)
+
+
 def generate_click_tool_html(image: np.ndarray, targets: List[CalibrationTarget], out_html: Path) -> None:
     """Self-contained (image embedded as base64, no server/relative-path
     dependency) HTML page: walks a human through clicking each target in
@@ -525,17 +669,50 @@ def build_spotcheck_montage(harvest_dir: Path, out_path: Path, cell_px: int = 10
     cv2.imwrite(str(out_path), canvas)
 
 
-def _board_from_args(args: argparse.Namespace) -> Optional[BoardState]:
-    if args.woogles_doc:
-        return board_from_woogles_document(args.woogles_doc, through_event=args.woogles_through_event)
-    if getattr(args, "gcg_final", None):
-        return board_from_gcg_final(args.gcg_final)
-    if args.gcg:
+def _board_from_spec(spec: Dict) -> Optional[BoardState]:
+    """Ground-truth lookup shared by the single-board CLI args and each
+    manifest entry consumed by `multi-targets`/`multi-harvest` -- same
+    three options either way: a woogles.io document, a tolerantly-
+    reconstructed final board, or a strict score-validated replay."""
+    if spec.get("woogles_doc"):
+        return board_from_woogles_document(Path(spec["woogles_doc"]), through_event=spec.get("woogles_through_event"))
+    if spec.get("gcg_final"):
+        return board_from_gcg_final(Path(spec["gcg_final"]))
+    if spec.get("gcg"):
         from training.collect.replay_game import read_gcg_moves, replay_gcg_game
-        moves = read_gcg_moves(args.gcg)
+        moves = read_gcg_moves(Path(spec["gcg"]))
         turns = replay_gcg_game(moves)
-        return turns[args.move - 1].board_after
+        return turns[spec["move"] - 1].board_after
     return None
+
+
+def _board_from_args(args: argparse.Namespace) -> Optional[BoardState]:
+    return _board_from_spec({
+        "woogles_doc": args.woogles_doc,
+        "woogles_through_event": args.woogles_through_event,
+        "gcg_final": getattr(args, "gcg_final", None),
+        "gcg": args.gcg,
+        "move": args.move,
+    })
+
+
+def load_manifest(manifest_path: Path) -> List[Dict]:
+    """A manifest is a JSON list, one entry per board, for `multi-targets`/
+    `multi-harvest`: `{"name": str, "image": path, "rotate": int (optional,
+    default 0)}` plus one ground-truth spec -- the same options `targets`/
+    `harvest` accept: `"gcg"` + `"move"`, `"gcg_final"`, or `"woogles_doc"`
+    (+ optional `"woogles_through_event"`). Optional `"use_occupied_cells"`
+    (+ `"count"`) targets spread-out occupied cells instead of the default
+    fixed TWS+center squares, same as the single-board `--use-occupied-cells`
+    flag. `name` must be unique across the manifest -- it's both the click
+    tool's board label and the harvest output's crop-file prefix."""
+    entries = json.loads(Path(manifest_path).read_text())
+    if not entries:
+        raise ValueError(f"manifest {manifest_path} is empty")
+    names = [e["name"] for e in entries]
+    if len(names) != len(set(names)):
+        raise ValueError(f"manifest {manifest_path} has duplicate board names: {names}")
+    return entries
 
 
 def main() -> None:
@@ -578,6 +755,22 @@ def main() -> None:
     harvest_cmd.add_argument("--out-dir", type=Path, required=True)
     harvest_cmd.add_argument("--prefix", required=True)
 
+    multi_targets_cmd = sub.add_parser(
+        "multi-targets", help="one combined HTML clicker tool for every board in a manifest -- one copy-paste for a whole batch"
+    )
+    multi_targets_cmd.add_argument("manifest", type=Path, help="see load_manifest()'s docstring for the JSON shape")
+    multi_targets_cmd.add_argument("--out", type=Path, required=True)
+
+    multi_harvest_cmd = sub.add_parser(
+        "multi-harvest", help="harvest every board in a manifest from the one combined clicks blob multi-targets produced"
+    )
+    multi_harvest_cmd.add_argument("manifest", type=Path)
+    multi_harvest_cmd.add_argument("--clicks", type=Path, required=True,
+                                    help="the combined JSON blob multi-targets's page displays, keyed by board name")
+    multi_harvest_cmd.add_argument("--out-dir", type=Path, required=True,
+                                    help="each board's crops+montage land in out_dir/<name>/, kept separate so a "
+                                         "spot-check montage is never accidentally mixed across boards")
+
     args = parser.parse_args()
 
     if args.command == "targets":
@@ -616,6 +809,56 @@ def main() -> None:
         build_spotcheck_montage(args.out_dir, montage_path)
         print(f"harvested {count} cells to {args.out_dir}")
         print(f"spot-check montage: {montage_path} -- inspect before adding to training data")
+        return
+
+    if args.command == "multi-targets":
+        entries = load_manifest(args.manifest)
+        boards = []
+        for entry in entries:
+            board = _board_from_spec(entry)
+            if entry.get("use_occupied_cells"):
+                if board is None:
+                    raise SystemExit(f"{entry['name']}: --use-occupied-cells needs a ground-truth spec in the manifest")
+                targets = pick_calibration_targets(board, count=entry.get("count", 8))
+            else:
+                targets = pick_fixed_board_targets(board)
+            image = load_frame(Path(entry["image"]), rotate=entry.get("rotate", 0))
+            boards.append((entry["name"], image, targets))
+        generate_multi_click_tool_html(boards, args.out)
+        print(f"wrote {args.out} with {len(boards)} boards:")
+        for name, _, targets in boards:
+            print(f"  {name}: {len(targets)} targets")
+        return
+
+    if args.command == "multi-harvest":
+        entries = load_manifest(args.manifest)
+        all_clicks = json.loads(Path(args.clicks).read_text())
+        args.out_dir.mkdir(parents=True, exist_ok=True)
+        total = 0
+        for entry in entries:
+            name = entry["name"]
+            if name not in all_clicks:
+                print(f"warning: no clicks found for board {name!r} in {args.clicks} -- skipping")
+                continue
+            board = _board_from_spec(entry)
+            if board is None:
+                raise SystemExit(f"{name}: harvest needs a ground-truth spec in the manifest")
+            clicks_data = all_clicks[name]
+            clicks = [(c["row"], c["col"], c["x"], c["y"]) for c in clicks_data]
+            calibration, errors = fit_homography_from_clicks(clicks)
+            print(f"{name}: reprojection errors (canonical px, out of a 60px cell):")
+            for (row, col, _, _), err in zip(clicks, errors):
+                flag = "  <-- check this one" if err > 15 else ""
+                print(f"  ({row},{col}): {err:.1f}{flag}")
+            image = load_frame(Path(entry["image"]), rotate=entry.get("rotate", 0))
+            board_dir = args.out_dir / name
+            board_dir.mkdir(parents=True, exist_ok=True)
+            count = harvest_labeled_cells(image, board, calibration, board_dir, name)
+            total += count
+            montage_path = board_dir / f"_spotcheck_{name}.jpg"
+            build_spotcheck_montage(board_dir, montage_path)
+            print(f"  harvested {count} cells to {board_dir}")
+        print(f"total: {total} cells across {len(entries)} boards in {args.out_dir}")
 
 
 if __name__ == "__main__":
