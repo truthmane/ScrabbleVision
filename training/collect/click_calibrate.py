@@ -51,6 +51,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -59,7 +60,7 @@ import cv2
 import numpy as np
 
 from autoscorer.gamelogic.board import BoardState, Coord, Tile
-from autoscorer.gamelogic.notation import format_square
+from autoscorer.gamelogic.notation import format_square, parse_gcg_line, parse_position
 from autoscorer.perception.calibration.homography import (
     CANONICAL_CELL_PX,
     BoardCalibration,
@@ -231,6 +232,67 @@ def board_from_woogles_document(doc_path: Path, through_event: Optional[int] = N
                 cells[(row, col)] = Tile(letter=letter, is_blank=is_blank)
             row += dr
             col += dc
+    return BoardState(cells)
+
+
+_GCG_WITHDRAWAL_RE = re.compile(
+    r"^>(?P<player>[^:]+):\s+[A-Z?]*\s+--\s+-?\d+\s+-?\d+\s*$"
+)
+
+
+def board_from_gcg_final(gcg_path: Path) -> BoardState:
+    """Reconstructs the FINAL board straight from a .gcg's move text,
+    tolerant of two real-world things `training.collect.replay_game`'s
+    strict, score-validating replay chokes on (found via two of the
+    cross-tables.com `p=6003` batch's games, `g29132`/`g29692`):
+
+    1. **Withdrawn plays.** Some annotators log a take-back as its own
+       line -- `>Player: RACK --  -68 339` (word is literally `--`, and the
+       turn score is the exact negation of the just-played move's score).
+       `notation.parse_gcg_line` correctly refuses to parse this (it isn't
+       a play), but nothing then undoes the withdrawn play's placed
+       tiles, so a later real play across the same squares looks like an
+       illegal double-placement. Detected here and handled by removing
+       the immediately-preceding move's placed cells for that player.
+    2. **Non-standard word fields that skip the `.`-for-overlap
+       convention** other GCGs in this project use (e.g. `g29132`, a
+       hand-annotated commentary file): a crossing word is sometimes
+       spelled out in full instead of using `.` for the cell an earlier
+       play already filled. Handled by placing tolerantly -- if a cell is
+       already set to the SAME letter, silently reuse it (the natural
+       result of a real crossing word); only a genuine letter mismatch is
+       worth surfacing, so that prints a warning instead of raising.
+
+    No score validation happens here at all (unlike `replay_gcg_game`) --
+    this exists purely to answer "what does the final board look like",
+    which is exactly what a single end-state photo + its full GCG needs.
+    """
+    cells: Dict[Coord, Tile] = {}
+    last_move_cells_by_player: Dict[str, List[Coord]] = {}
+    for raw in Path(gcg_path).read_text().splitlines():
+        if _GCG_WITHDRAWAL_RE.match(raw.strip()):
+            player = raw.split(":", 1)[0][1:].strip()
+            for coord in last_move_cells_by_player.pop(player, []):
+                cells.pop(coord, None)
+            continue
+        move = parse_gcg_line(raw)
+        if move is None:
+            continue
+        (row, col), direction = parse_position(move.position)
+        dr, dc = (0, 1) if direction == "across" else (1, 0)
+        placed: List[Coord] = []
+        for ch in move.word:
+            if ch != ".":
+                letter, is_blank = ch.upper(), ch.islower()
+                existing = cells.get((row, col))
+                if existing is not None and existing.letter != letter:
+                    print(f"warning: board_from_gcg_final: cell {format_square((row, col))} "
+                          f"already had {existing.letter!r}, move {move.position} {move.word} "
+                          f"wants {letter!r} -- keeping the new letter")
+                cells[(row, col)] = Tile(letter=letter, is_blank=is_blank)
+                placed.append((row, col))
+            row, col = row + dr, col + dc
+        last_move_cells_by_player[move.player] = placed
     return BoardState(cells)
 
 
@@ -466,6 +528,8 @@ def build_spotcheck_montage(harvest_dir: Path, out_path: Path, cell_px: int = 10
 def _board_from_args(args: argparse.Namespace) -> Optional[BoardState]:
     if args.woogles_doc:
         return board_from_woogles_document(args.woogles_doc, through_event=args.woogles_through_event)
+    if getattr(args, "gcg_final", None):
+        return board_from_gcg_final(args.gcg_final)
     if args.gcg:
         from training.collect.replay_game import read_gcg_moves, replay_gcg_game
         moves = read_gcg_moves(args.gcg)
@@ -485,6 +549,11 @@ def main() -> None:
                               help="reconstruct board state after events[:N] instead of the final (often over-cluttered) board")
     targets_cmd.add_argument("--gcg", type=Path, default=None)
     targets_cmd.add_argument("--move", type=int, default=None)
+    targets_cmd.add_argument("--gcg-final", type=Path, default=None,
+                              help="reconstruct the FINAL board tolerantly straight from a .gcg's move text "
+                                   "(handles withdrawn plays and non-'.'-marked overlaps) instead of the "
+                                   "strict, score-validating --gcg/--move replay -- for a single end-state "
+                                   "photo where the whole game's ground truth is already known")
     targets_cmd.add_argument("--use-occupied-cells", action="store_true",
                               help="target spread-out occupied cells (needs --woogles-doc/--gcg) instead of "
                                    "the default: the 8 fixed Triple Word Score squares + center, which need "
@@ -501,6 +570,8 @@ def main() -> None:
                               help="must match the value used at the targets step")
     harvest_cmd.add_argument("--gcg", type=Path, default=None)
     harvest_cmd.add_argument("--move", type=int, default=None)
+    harvest_cmd.add_argument("--gcg-final", type=Path, default=None,
+                              help="must match the value used at the targets step")
     harvest_cmd.add_argument("--rotate", type=int, choices=[0, 90, 180, 270], default=0,
                               help="must match --rotate used for the targets step -- clicks were made against that rotated image")
     harvest_cmd.add_argument("--clicks", type=Path, required=True)
@@ -513,7 +584,7 @@ def main() -> None:
         board = _board_from_args(args)
         if args.use_occupied_cells:
             if board is None:
-                raise SystemExit("--use-occupied-cells needs --woogles-doc or (--gcg and --move)")
+                raise SystemExit("--use-occupied-cells needs --woogles-doc, --gcg-final, or (--gcg and --move)")
             targets = pick_calibration_targets(board, count=args.count)
         else:
             # board may be None here -- fine, pick_fixed_board_targets falls
@@ -529,7 +600,7 @@ def main() -> None:
     if args.command == "harvest":
         board = _board_from_args(args)
         if board is None:
-            raise SystemExit("harvest needs ground truth: --woogles-doc or (--gcg and --move)")
+            raise SystemExit("harvest needs ground truth: --woogles-doc, --gcg-final, or (--gcg and --move)")
 
         clicks_data = json.loads(Path(args.clicks).read_text())
         clicks = [(c["row"], c["col"], c["x"], c["y"]) for c in clicks_data]

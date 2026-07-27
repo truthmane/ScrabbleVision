@@ -11,6 +11,7 @@ from training.collect.click_calibrate import (
     CENTER_SQUARE,
     TRIPLE_WORD_SCORE_SQUARES,
     CalibrationTarget,
+    board_from_gcg_final,
     board_from_woogles_document,
     build_spotcheck_montage,
     fit_homography_from_clicks,
@@ -169,6 +170,60 @@ def test_board_from_woogles_document_skips_hooked_cells_without_overwriting(tmp_
     assert board.get((7, 7)) == Tile("V")  # untouched by the hook, not overwritten
     assert board.get((7, 8)) == Tile("S")
     assert len(list(board.occupied_cells())) == 3
+
+
+def test_board_from_gcg_final_undoes_a_withdrawn_play(tmp_path):
+    # H8 CAT, then a withdrawal that exactly negates its score, then a
+    # different real play crossing the same squares -- if the withdrawal
+    # weren't undone, this would be a double-placement.
+    gcg_path = tmp_path / "game.gcg"
+    gcg_path.write_text(
+        "#player1 A A\n"
+        "#player2 B B\n"
+        ">A: CAT 8H CAT +10 10\n"
+        ">A: CAT --  -10 0\n"
+        ">B: DOG 8H DOG +12 12\n"
+    )
+
+    board = board_from_gcg_final(gcg_path)
+
+    assert board.get((7, 7)) == Tile("D")
+    assert board.get((7, 8)) == Tile("O")
+    assert board.get((7, 9)) == Tile("G")
+    assert len(list(board.occupied_cells())) == 3
+
+
+def test_board_from_gcg_final_tolerates_a_crossing_word_spelled_out_in_full(tmp_path):
+    # Second move spells CAT in full (no '.' at the shared cell) instead of
+    # using the standard overlap convention -- same letter, so it should be
+    # accepted silently rather than raising.
+    gcg_path = tmp_path / "game.gcg"
+    gcg_path.write_text(
+        "#player1 A A\n"
+        "#player2 B B\n"
+        ">A: CAT H8 CAT +10 10\n"
+        ">B: CAT 8H CAT +10 20\n"
+    )
+
+    board = board_from_gcg_final(gcg_path)
+
+    assert board.get((7, 7)) == Tile("C")
+    assert len(list(board.occupied_cells())) == 5
+
+
+def test_board_from_gcg_final_warns_but_keeps_new_letter_on_genuine_conflict(tmp_path, capsys):
+    gcg_path = tmp_path / "game.gcg"
+    gcg_path.write_text(
+        "#player1 A A\n"
+        "#player2 B B\n"
+        ">A: CAT H8 CAT +10 10\n"
+        ">B: DOG 8H DOG +10 20\n"
+    )
+
+    board = board_from_gcg_final(gcg_path)
+
+    assert board.get((7, 7)) == Tile("D")  # last write wins
+    assert "warning" in capsys.readouterr().out.lower()
 
 
 def test_generate_click_tool_html_embeds_targets_and_image(tmp_path):
