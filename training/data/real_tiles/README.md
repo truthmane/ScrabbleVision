@@ -1,6 +1,6 @@
 # Real tile crop dataset
 
-513 real, individually-verified Scrabble tile crops (60x60 canonical, one per occupied board
+1,193 real, individually-verified Scrabble tile crops (60x60 canonical, one per occupied board
 cell), organized as an `ImageFolder`-compatible directory (`<LETTER>/*.png`, plus `BLANK/` for
 blank tiles) for `training/classify/train.py`.
 
@@ -25,6 +25,13 @@ Every file is named `<LABEL>_<venue_prefix>_<row>_<col>.png` — the label is th
 | `mack_round8` | 2026 Scrabble Players Championship, Round 8, Mack Meller vs Joey Mallick | 99 | GCG `anno61132.gcg` |
 | `mack_round15` | 2026 Scrabble Players Championship, Round 15, Mack Meller vs Joey Krafchick | 97 | GCG `anno61170.gcg` |
 | `mack_round25` | 2026 Scrabble Players Championship, Round 25, Mack Meller vs Joey Krafchick | 98 | GCG `anno61157.gcg` |
+| `batch10_g55974` | Mack Meller vs Nigel Richards (cross-tables.com game `g55974`) | 98 | GCG, full end-state board photo screenshotted by the user |
+| `batch10_g55292` | Nigel Richards vs Joey Krafchick (cross-tables.com game `g55292`) | 96 | GCG, same as above |
+| `batch10_g29132` | Joey Mallick vs Nigel Richards, 2018 Scrabble Championship 1/10 | 98 | GCG (`g29132`), reconstructed via `board_from_gcg_final` (this GCG spells crossing words in full instead of using `.` for overlaps) |
+| `batch10_g29692` | Jackson Smylie vs Nigel Richards, 2018 Scrabble Championship 4/10 | 99 | GCG (`g29692`), reconstructed via `board_from_gcg_final` (this GCG logs a withdrawn/retaken play as its own line) |
+| `batch10_g36165` | WSC 2018 Grand Final, Round 4 | 97 | GCG (`g36165`) |
+| `batch10_g36164` | WSC 2018 Grand Final, Round 3 | 95 | GCG (`g36164`) |
+| `batch10_g35181` | David Eldar, WSC 2019 Final Part 2 | 97 | GCG (`g35181`) |
 
 All calibrated via `training/collect/click_calibrate.py` (see that module's docstring and
 `training/collect/README.md` section 3b) — a human clicks a handful of named reference cells
