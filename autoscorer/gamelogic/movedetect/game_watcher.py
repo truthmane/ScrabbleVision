@@ -82,6 +82,7 @@ being a system rather than a collection of validated parts.
 """
 from __future__ import annotations
 
+import math
 from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
@@ -649,10 +650,21 @@ class GameWatcher:
         # is, only that it's a blank at all. Fall back to the classifier's
         # own BLANK confidence in that case; it's what genuinely reflects
         # this cell's uncertainty.
-        min_confidence = min(
-            conf_by_coord[coord].get(label, conf_by_coord[coord].get(CLASSIFIER_BLANK_LABEL, 0.0))
+        #
+        # Aggregated across cells by GEOMETRIC MEAN, not MIN. Measured
+        # against 29 real commits from the WESPA broadcast
+        # (confidence_aggregation_experiment.py): a best-threshold split
+        # separates correct from wrong commits at 75.9% accuracy under
+        # the geometric mean vs. 65.5% under MIN. MIN is a per-length
+        # penalty by construction -- a 7-letter word with six confident
+        # cells and one shaky one scores no better than a 1-letter play
+        # of that same shaky cell alone -- which structurally punishes
+        # longer, often-correct words the hardest.
+        per_cell_confs = [
+            max(conf_by_coord[coord].get(label, conf_by_coord[coord].get(CLASSIFIER_BLANK_LABEL, 0.0)), 1e-6)
             for coord, label in decoded.items()
-        )
+        ]
+        move_confidence = math.exp(sum(math.log(c) for c in per_cell_confs) / len(per_cell_confs))
 
         blank_coords = tuple(sorted(reading.blank_cells))
         if blank_coords:
@@ -717,10 +729,10 @@ class GameWatcher:
         # truncated/soft-extended candidate cannot rely on confidence alone
         # in standalone mode; it bypasses the gateway outright, below, the
         # same way the blank check above already does.
-        publish_confidence = 0.0 if force_operator else min_confidence
+        publish_confidence = 0.0 if force_operator else move_confidence
 
         if self.session is not None:
-            return self._submit_play_via_session(decoded, player_id, min_confidence, publish_confidence, force_operator)
+            return self._submit_play_via_session(decoded, player_id, move_confidence, publish_confidence, force_operator)
 
         words = words_formed(board_after, new_cells)
         move_score = score_move(board_after, words, new_cells)
@@ -734,27 +746,27 @@ class GameWatcher:
 
         if force_operator or not self.publish_gateway.should_auto_publish(publish_confidence):
             pending = PendingMove(
-                scored_move=scored_move, board_after=board_after, racks_after={}, confidence=min_confidence,
+                scored_move=scored_move, board_after=board_after, racks_after={}, confidence=move_confidence,
             )
             reason = (
                 "truncated or soft-supported placement always needs operator review" if force_operator
                 else "confidence below gateway threshold"
             )
             return WatcherEvent(
-                state=self.state, scored_move=scored_move, confidence=min_confidence,
+                state=self.state, scored_move=scored_move, confidence=move_confidence,
                 needs_operator=True, pending=pending, reason=reason,
             )
 
         self._board = board_after
         self._turn_number = provisional_turn
         self.state = WatcherState.APPLIED
-        return WatcherEvent(state=self.state, scored_move=scored_move, confidence=min_confidence)
+        return WatcherEvent(state=self.state, scored_move=scored_move, confidence=move_confidence)
 
     def _submit_play_via_session(
         self,
         decoded: Dict[Coord, str],
         player_id: str,
-        min_confidence: float,
+        move_confidence: float,
         publish_confidence: Optional[float] = None,
         force_operator: bool = False,
     ) -> WatcherEvent:
@@ -768,20 +780,20 @@ class GameWatcher:
         normally trigger -- handled anyway since `submit_move`'s contract
         allows it.
 
-        `publish_confidence`, if lower than `min_confidence`, forces the
+        `publish_confidence`, if lower than `move_confidence`, forces the
         session's own gateway to deny auto-publish (a truncated or
-        soft-supported candidate) while `min_confidence` still reports the
+        soft-supported candidate) while `move_confidence` still reports the
         real value for diagnostics.
         """
         new_tiles = [(coord, label, False) for coord, label in decoded.items()]
         result = self.session.submit_move(
             player_id, new_tiles=new_tiles,
-            confidence=publish_confidence if publish_confidence is not None else min_confidence,
+            confidence=publish_confidence if publish_confidence is not None else move_confidence,
         )
 
         if isinstance(result.outcome, MoveProcessingError):
             return WatcherEvent(
-                state=self.state, confidence=min_confidence, needs_operator=True, reason=result.outcome.reason,
+                state=self.state, confidence=move_confidence, needs_operator=True, reason=result.outcome.reason,
             )
 
         self.state = WatcherState.APPLIED if result.published else WatcherState.SCORED
@@ -794,7 +806,7 @@ class GameWatcher:
         else:
             reason = "confidence below gateway threshold"
         return WatcherEvent(
-            state=self.state, scored_move=result.outcome, confidence=min_confidence,
+            state=self.state, scored_move=result.outcome, confidence=move_confidence,
             needs_operator=not result.published, pending=pending, reason=reason,
         )
 
