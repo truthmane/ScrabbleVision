@@ -424,3 +424,76 @@ An ML-powered auto-annotator for livestreamed Scrabble games
   changes letter/word decoding, not turn detection). The CLI's own
   regression check reports **no regressions vs. the WS1 baseline**.
   Baseline JSON updated to this new, better state.
+- **WS3 occupancy signal work -- items 1-2 landed, a real trade-off
+  measured and kept, items 3-5 not started.** `read_new_cells_voted`'s
+  hard unanimous-AND (every frame in a settled window must agree a cell
+  is occupied) is now a two-tier system: unanimous is still HARD; a cell
+  agreed on by all but one frame, *and* orthogonally adjacent to a HARD
+  cell, is SOFT -- usable only as an optional in-line extension of an
+  already-confirmed HARD run (`placement_search.py`'s soft-cell
+  extension, finally wired up), never as a placement anchor on its own.
+  Targets a real measured case (WESPA "RAGBOLT"'s final T: diff 38.96
+  against a 38.0 threshold, a bare miss in an otherwise clean window).
+  Also added `crop_cell_inset` -- an occupancy-only 5% inset crop that
+  trims grid-line/neighbor-bleed noise at each cell's edge, deliberately
+  never touching `crop_cell` itself (the classifier's trained input
+  distribution).
+
+  **Two real regressions found and fixed via real-video testing before
+  either item shipped clean.** A naive "any partial vote, anywhere on
+  the board" SOFT rule reintroduced exactly the noise unanimity existed
+  to reject, once turning a ~6-minute real run into 30+ minutes with no
+  accuracy gain -- fixed by bounding SOFT to cells adjacent to a HARD
+  cell. Even bounded, a SOFT-extended candidate ranks *ahead* of the
+  plain HARD one (longer wins, and phonies being legal means a nonsense
+  extension can't be rejected on spelling), so a persistent low-confidence
+  SOFT neighbor could hijack detection on every observation of a real
+  placement -- fixed with an all-but-one-frame vote requirement (a bare
+  majority was tried first and measurably still let through too much
+  noise) plus a 0.7 classifier-confidence floor on the SOFT cell itself.
+  A naive 15% inset crop was also found, via direct measurement, to
+  erase a blank tile's entire detectable signal (no glyph means no
+  interior texture -- its only signal is its own edge, and 15% trims
+  that away entirely); shipped at a conservative 5% instead, pinned with
+  a regression test.
+
+  **Isolated via controlled real-video comparison (revert one item at a
+  time): the support-tier work (item 1) has zero measurable effect on
+  this real video, positive or negative** -- proven safe, but the
+  RAGBOLT-style case it targets doesn't come up often enough in this
+  one video to show a benefit. **The inset crop (item 2) is entirely
+  responsible for a real, still-open trade-off**: missed real turns
+  **8 → 0** and final-board-missing content **44 → 14**, at the cost of
+  spurious detections **5 → 12** and `cell_f1_micro` **0.933 → 0.763**.
+  Kept, per explicit review: missed content is a strictly worse failure
+  than a spurious one under this project's own confidence-fallback
+  publish modes (an uncertain read gets routed to a human; a missed
+  tile never gets attempted at all), and cumulative score drift --
+  arguably the more game-relevant top-line number -- is actually smaller
+  with the inset crop despite the noisier cell-level picture. Still an
+  unvalidated-beyond-one-video first-cut value, flagged for real
+  per-venue re-tuning.
+
+  **A real, pre-existing bug was found and ruled out as unrelated to any
+  of this**: the real player in this broadcast places a multi-tile word
+  one tile at a time with genuine pauses between each, and a single
+  already-placed tile can satisfy the two-observation confirmation rule
+  on its own before the rest of the word appears -- confirmed identical
+  on the literal pre-WS3 commit, checked out fresh. There is no
+  turn-clock signal to distinguish "the player is done" from "the player
+  is still building the word," which this project has always documented
+  as out of scope for a board-camera-only system. Not fixed this
+  session; a tried mitigation (discard any observation reporting more
+  new cells than a full rack) was built, tested, and reverted after it
+  broke the synthetic full-game test's never-jam guarantee -- a real
+  multi-blank move can legitimately backlog past 7 cells while its
+  blanks take several observations to quarantine, and a cell-count cap
+  can't tell that apart from real sensor noise.
+
+  **Also found and fixed: the repo's own committed real-video regression
+  baseline was never reproducible.** Its recorded git commit predates
+  the lexicon module's existence, yet the baseline shows active lexicon
+  usage -- it was captured from uncommitted work-in-progress, and that
+  exact state was never preserved. Regenerated from the actual current
+  code, honestly labeled, so future regression checks compare against
+  something real. **307 tests passing.**
