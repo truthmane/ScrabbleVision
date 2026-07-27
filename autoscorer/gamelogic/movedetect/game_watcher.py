@@ -909,6 +909,28 @@ class GameWatcher:
         if not is_first_observation and _rack_multiset(new_rack) == _rack_multiset(previous_rack):
             return None
 
+        # A rack detector/classifier misread (most often a real letter
+        # hallucinated as a BLANK, found running exactly this check
+        # against a real game for the first time) can claim more of some
+        # letter exists across board+racks than the standard 100-tile set
+        # actually has -- if committed silently, this doesn't just make
+        # THIS rack wrong, it corrupts `remaining_supply` for every future
+        # decode using ANY player's rack, including completely unrelated
+        # board turns that have nothing to do with this misread. Reject
+        # (never commit, route to operator) any candidate rack that would
+        # create an impossible tile-supply state, the same "never silently
+        # corrupt downstream state" philosophy `compute_pool_state` itself
+        # already documents for board+rack decoding.
+        other_racks = [rack for pid, rack in self.racks.items() if pid != player_id]
+        try:
+            compute_pool_state(self.board, other_racks + [new_rack])
+        except PoolInvariantViolation:
+            return WatcherEvent(
+                state=self.state, confidence=0.0, needs_operator=True,
+                reason="rack read would violate the tile-supply pool invariant -- likely a misread "
+                       "(e.g. a real letter read as a blank)",
+            )
+
         min_confidence = min((obs.confidence for obs in observations), default=1.0)
 
         if is_first_observation:

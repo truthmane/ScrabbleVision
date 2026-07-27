@@ -111,55 +111,90 @@ def generate_rack_scene(
     rng: Optional[random.Random] = None,
     tile_count: Optional[int] = None,
     blank_probability: float = 0.05,
+    letters: Optional[List[Optional[str]]] = None,
 ) -> RackScene:
     """One synthetic rack photo: 1-7 tiles (unless `tile_count` is given),
     split into 1-3 contiguous groups with gaps between them, each tile
     independently rotated/lit, composited onto a wood-grain background,
     with a tight bounding box recorded per tile.
+
+    Pass `letters` (each entry a letter, or `None` for a blank) to render
+    a SPECIFIC, known rack instead of random tiles -- e.g. a real player's
+    actual rack-before-move from a `.gcg` record, for an end-to-end test
+    that needs ground truth to check the detector's output against.
+    `tile_count` is inferred from `len(letters)` when given; the two
+    aren't meant to be passed together.
     """
     rng = rng or random.Random()
-    tile_count = tile_count if tile_count is not None else rng.randint(1, 7)
+    if letters is not None:
+        tile_count = len(letters)
+    else:
+        tile_count = tile_count if tile_count is not None else rng.randint(1, 7)
+        letters = []
+        for _ in range(tile_count):
+            if rng.random() < blank_probability:
+                letters.append(None)
+            else:
+                letters.append(rng.choice([c for c in TILE_CLASSES if c != "BLANK"]))
 
     background = _rack_background(rng)
     groups = _split_into_groups(tile_count, rng)
 
-    letters: List[Optional[str]] = []
-    for _ in range(tile_count):
-        if rng.random() < blank_probability:
-            letters.append(None)
-        else:
-            letters.append(rng.choice([c for c in TILE_CLASSES if c != "BLANK"]))
-
     boxes: List[TileBox] = []
     letter_iter = iter(letters)
 
-    within_group_gap = lambda: rng.randint(-4, 6)  # tiles in a group nearly touch, sometimes overlap a hair
-    between_group_gap = lambda: rng.randint(50, 160)
+    # Every requested tile must actually be rendered -- silently dropping
+    # one past a hard-coded overflow check (the previous behavior here)
+    # meant a caller asking for `tile_count` tiles could get fewer with no
+    # warning, corrupting exactly the ground truth an end-to-end test
+    # needs to trust. Random per-transition gaps are drawn first, then
+    # scaled down (never dropped) if the total wouldn't fit `RACK_WIDTH`
+    # -- at up to 7 tiles (a full rack) with unlucky gap rolls, the
+    # naive random gaps can genuinely exceed the canvas.
+    start_x = rng.randint(10, 60)
+    within_group_gaps = [rng.randint(-4, 6) for _ in range(tile_count - len(groups))]
+    between_group_gaps = [rng.randint(50, 160) for _ in range(len(groups) - 1)]
 
-    x = rng.randint(10, 60)
+    total_width = start_x + tile_count * TILE_RENDER_SIZE + sum(within_group_gaps) + sum(between_group_gaps)
+    available = RACK_WIDTH - 10
+    if total_width > available and between_group_gaps:
+        # Shrink the between-group gaps first (they're the largest, most
+        # visually forgiving to compress) before ever touching a tile's
+        # own render size or dropping a tile.
+        overflow = total_width - available
+        min_gap = 15
+        shrinkable = sum(g - min_gap for g in between_group_gaps)
+        if shrinkable > 0:
+            scale = max(0.0, 1.0 - overflow / shrinkable)
+            between_group_gaps = [min_gap + (g - min_gap) * scale for g in between_group_gaps]
+
     baseline_y = rng.randint(20, RACK_HEIGHT - TILE_RENDER_SIZE - 20)
+    x = float(start_x)
+    within_iter = iter(within_group_gaps)
+    between_iter = iter(between_group_gaps)
 
     for group_idx, group_size in enumerate(groups):
         for i in range(group_size):
             letter = next(letter_iter)
             tile_img, mask = _tile_with_mask(letter, rng)
-
             y = baseline_y + rng.randint(-6, 6)
-            if x + TILE_RENDER_SIZE > RACK_WIDTH - 10:
-                break  # ran out of room (shouldn't happen at realistic counts, but stay safe)
 
-            background.paste(tile_img, (x, y), mask)
+            background.paste(tile_img, (round(x), y), mask)
 
             local_bbox = mask.getbbox()
             if local_bbox is not None:
                 lx1, ly1, lx2, ly2 = local_bbox
                 label = "BLANK" if letter is None else letter
-                boxes.append(TileBox(label=label, x1=x + lx1, y1=y + ly1, x2=x + lx2, y2=y + ly2))
+                boxes.append(TileBox(
+                    label=label, x1=round(x) + lx1, y1=y + ly1, x2=round(x) + lx2, y2=y + ly2,
+                ))
 
-            x += TILE_RENDER_SIZE + within_group_gap()
+            x += TILE_RENDER_SIZE
+            if i < group_size - 1:
+                x += next(within_iter)
 
         if group_idx < len(groups) - 1:
-            x += between_group_gap()
+            x += next(between_iter)
 
     return RackScene(image=background, boxes=boxes)
 

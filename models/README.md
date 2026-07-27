@@ -85,9 +85,30 @@ The rack-tile object detector described in `training/detect/README.md`. Stored v
   these photos — the two-stage split (detector localizes, classifier reads) is measurably
   better than letting the detector label. See `training/detect/README.md` for the full
   comparison.
-- **Not yet wired into a full end-to-end run**: `read_rack` exists in the perception layer, but
-  the constraint decoder hasn't yet been re-validated with real (non-empty) racks in place of the
-  `racks=[]` placeholder it always used before this checkpoint existed.
+- **Now wired into a full end-to-end run** (`tests/slow/test_rack_detector_end_to_end.py`):
+  drives one real `GameWatcher` with both the real board pipeline and this real rack detector +
+  the real tile classifier together, against real turns from the WESPA Game 1 broadcast (rack
+  ground truth pulled straight from the `.gcg`'s own `rack` field). `GameWatcher.racks` is no
+  longer the `racks=[]` placeholder `decode_with_lexicon`'s pool-feasibility check always fell
+  back to before this. Honest result on synthetic rack renders (not the real photos this
+  checkpoint was originally validated on): **90% per-tile accuracy (19/21) on accepted reads**,
+  with one of four rack reads correctly rejected by a new safety check rather than silently
+  corrupting state (see below) — lower than the original 14/14 on real photos, as expected for a
+  different, harder rendering distribution, not a regression.
+- **Found and fixed two real bugs while building that first end-to-end run**, both invisible
+  until board and rack detection were actually driven together for the first time:
+  1. `training/synth_render/rack_scene_renderer.py`'s `generate_rack_scene` silently DROPPED
+     tiles that didn't fit within its fixed canvas width — random gap rolls for a full 7-tile
+     rack could occasionally exceed the canvas, and the function quietly rendered (and recorded
+     ground truth for) fewer tiles than requested instead of guaranteeing every tile appears.
+     Fixed by precomputing gaps and shrinking them (never dropping a tile) when they don't fit.
+  2. A rack misread (most often a real letter hallucinated as a `BLANK`) that claims more of some
+     letter exists across board+racks than the real 100-tile set has doesn't just make that one
+     rack wrong — silently committed, it corrupts `remaining_supply`'s pool math for every future
+     decode using ANY player's rack, including completely unrelated board turns. `record_rack` now
+     checks `compute_pool_state` before committing a candidate rack and rejects (routes to
+     operator, keeps the last known-good rack) anything that would create an impossible tile
+     supply, rather than silently corrupting tracked state.
 
 ### Loading it
 

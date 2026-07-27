@@ -13,6 +13,16 @@ def test_generates_the_requested_number_of_tiles_and_boxes():
     assert len(scene.boxes) == 5
 
 
+def test_explicit_letters_renders_exactly_those_tiles_in_order():
+    rng = random.Random(0)
+    letters = ["Q", "U", "I", None, "Z", "E", "S"]  # includes a blank
+    scene = generate_rack_scene(rng=rng, letters=letters)
+
+    assert len(scene.boxes) == len(letters)
+    expected_labels = ["Q", "U", "I", "BLANK", "Z", "E", "S"]
+    assert [box.label for box in scene.boxes] == expected_labels
+
+
 def test_every_box_is_within_image_bounds_and_non_degenerate():
     rng = random.Random(1)
     for _ in range(20):
