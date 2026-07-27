@@ -8,7 +8,10 @@ An ML-powered auto-annotator for livestreamed Scrabble games
   camera required -- see `autoscorer/api/`.
 - **Perception components (Phases 3-5)**: built and validated
   individually against real broadcast photos -- board rectification,
-  occupancy detection, a 27-class tile classifier (64.6% held-out,
+  occupancy detection, a 27-class tile classifier (**~74-76% held-out on
+  trustworthy ground truth** -- the long-reported 64.6% figure turned out
+  to be deflated ~10-12 points by a corrupted harvest batch in the
+  held-out set itself, found and corrected; see
   `docs/classifier-accuracy-plan.md`), an RF-DETR rack-tile detector
   (`training/detect/README.md`), temporal voting, constraint decoding,
   and a stillness/occlusion gate.
