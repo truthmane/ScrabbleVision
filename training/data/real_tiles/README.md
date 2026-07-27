@@ -1,6 +1,6 @@
 # Real tile crop dataset
 
-1,193 real, individually-verified Scrabble tile crops (60x60 canonical, one per occupied board
+2,174 real, individually-verified Scrabble tile crops (60x60 canonical, one per occupied board
 cell), organized as an `ImageFolder`-compatible directory (`<LETTER>/*.png`, plus `BLANK/` for
 blank tiles) for `training/classify/train.py`.
 
@@ -32,6 +32,16 @@ Every file is named `<LABEL>_<venue_prefix>_<row>_<col>.png` — the label is th
 | `batch10_g36165` | WSC 2018 Grand Final, Round 4 | 97 | GCG (`g36165`) |
 | `batch10_g36164` | WSC 2018 Grand Final, Round 3 | 95 | GCG (`g36164`) |
 | `batch10_g35181` | David Eldar, WSC 2019 Final Part 2 | 97 | GCG (`g35181`) |
+| `batch2_g60796` | Albany, NY 2026-07-02, Joshua Castellano's opponent (annotator used pen names) | 99 | GCG (`g60796`) |
+| `batch2_g59120` | Jackson Smylie vs Josh Sokol-Rubenstein, Montreal QC 2026-03-07 | 96 | GCG (`g59120`) |
+| `batch2_g51842` | Ben Schoenbrun vs Josh Sokol, Albany NY 2024-12-29 | 99 | GCG (`g51842`) |
+| `batch2_g52040` | Matthew Tunnicliffe vs Josh Sokol, Lake George NY 2024-10-18 | 98 | GCG (`g52040`), reconstructed via `board_from_gcg_final` |
+| `batch2_g48957` | Josh Sokol vs Matthew Tunnicliffe, Montreal QC 2024-05-24 | 99 | GCG (`g48957`) |
+| `batch2_g45984` | Jackson Smylie vs Josh Sokol-Rubenstein, Crescent City Cup LA 2024-01-13 | 98 | GCG (`g45984`) |
+| `batch2_g45334` | Stefan Fatsis vs Josh Sokol, Albany NY 2023-12-29 | 98 | GCG (`g45334`) |
+| `batch2_g43439` | Joshua vs Joey Mallick, 32nd National Championship Finals 2023-07-19 | 97 | GCG (`g43439`) |
+| `batch2_g43003` | Mack Meller vs Josh Sokol, 11th Word Cup 2023-06-30 | 99 | GCG (`g43003`) |
+| `batch2_g39295` | Will Anderson vs Joshua Sokol, 31st National Championship 2022-07-23 | 98 | GCG (`g39295`) |
 
 All calibrated via `training/collect/click_calibrate.py` (see that module's docstring and
 `training/collect/README.md` section 3b) — a human clicks a handful of named reference cells
