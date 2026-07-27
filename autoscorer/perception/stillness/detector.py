@@ -17,7 +17,8 @@ camera sensor noise set a venue-specific noise floor.
 """
 from __future__ import annotations
 
-from typing import List, Optional, Sequence
+from collections import deque
+from typing import Deque, List, Optional, Sequence
 
 import cv2
 import numpy as np
@@ -81,3 +82,70 @@ def stable_window(
     if not is_settled(recent_frames, motion_threshold, required_still_frames):
         return None
     return list(recent_frames[-required_still_frames:])
+
+
+class StillnessTracker:
+    """Incremental equivalent of calling `is_settled`/`stable_window`
+    against a hand-maintained buffer on every new frame.
+
+    `is_settled`/`stable_window` recompute all `required_still_frames - 1`
+    pairwise `frame_motion_score` calls from scratch every time they're
+    called, even though a caller that appends one frame per call (every
+    real caller -- see `GameWatcher`) already had all but one of those
+    pairs computed on the *previous* call. That's fine at the small window
+    this was originally tuned at, but `VenueProfile.
+    effective_still_frame_count` now derives `required_still_frames` from
+    `still_seconds * sample_fps`, so a venue calibrated at a low
+    `sample_fps` and replayed at a higher one gets a much larger window
+    (e.g. 50 frames instead of 5) -- and since per-call cost scales with
+    window size too, that's quadratic in the frame stream's length,
+    measured at ~100x slower on a real video eval.
+
+    This caches the still/not-still verdict for each consecutive pair the
+    first time it's computed, so `push` costs exactly one new
+    `frame_motion_score` call regardless of window size.
+
+    `motion_threshold` and `required_still_frames` are fixed for the
+    tracker's lifetime -- matches how every real caller uses them (set
+    once, never reassigned); make a new tracker rather than mutating one
+    mid-stream.
+    """
+
+    def __init__(
+        self,
+        motion_threshold: float = DEFAULT_MOTION_THRESHOLD,
+        required_still_frames: int = DEFAULT_STILL_FRAME_COUNT,
+    ):
+        self.motion_threshold = motion_threshold
+        self.required_still_frames = required_still_frames
+        self._frames: Deque[np.ndarray] = deque(maxlen=required_still_frames)
+        self._pair_still: Deque[bool] = deque(maxlen=max(required_still_frames - 1, 0))
+
+    def push(self, frame: np.ndarray) -> None:
+        """Feed one new frame in, updating the cached pairwise verdicts."""
+        if self._frames:
+            still = frame_motion_score(self._frames[-1], frame) <= self.motion_threshold
+            self._pair_still.append(still)
+        self._frames.append(frame)
+
+    def is_settled(self) -> bool:
+        return (
+            len(self._frames) == self.required_still_frames
+            and len(self._pair_still) == self.required_still_frames - 1
+            and all(self._pair_still)
+        )
+
+    def stable_window(self) -> Optional[List[np.ndarray]]:
+        if not self.is_settled():
+            return None
+        return list(self._frames)
+
+    @property
+    def last_pair_still(self) -> Optional[bool]:
+        """Whether the two most recently pushed frames were within
+        `motion_threshold` of each other, or `None` if fewer than two
+        frames have been pushed yet."""
+        return self._pair_still[-1] if self._pair_still else None
+
+    def __len__(self) -> int:
+        return len(self._frames)

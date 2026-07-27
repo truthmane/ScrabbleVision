@@ -117,8 +117,7 @@ from autoscorer.perception.occupancy.detector import (
 from autoscorer.perception.stillness.detector import (
     DEFAULT_MOTION_THRESHOLD,
     DEFAULT_STILL_FRAME_COUNT,
-    frame_motion_score,
-    stable_window,
+    StillnessTracker,
 )
 from training.classify.infer import TileClassifierModel
 
@@ -300,7 +299,7 @@ class GameWatcher:
         self._racks: Dict[str, List[Tile]] = {}
         self._turn_number = 0
         self.state = WatcherState.IDLE_STILL
-        self._frame_buffer: List[np.ndarray] = []
+        self._frame_buffer = StillnessTracker(motion_threshold, still_frame_count)
         # A settled read is never committed the moment it's first seen --
         # only once a cell has appeared as a new candidate in two
         # consecutive settled observations does it count as confirmed.
@@ -326,7 +325,7 @@ class GameWatcher:
         # Per-player rolling rack-frame buffer, gated through the same
         # stillness check the board path uses (see `record_rack`) --
         # keyed by player_id since two rack cameras settle independently.
-        self._rack_frame_buffers: Dict[str, List[np.ndarray]] = {}
+        self._rack_frame_buffers: Dict[str, StillnessTracker] = {}
 
         # Never-jam commit search state (see the module docstring and the
         # FAILURE_QUARANTINE_THRESHOLD/etc. constants above).
@@ -432,17 +431,11 @@ class GameWatcher:
         (alternates deterministically in a 2-player game); vision alone
         can't determine this.
         """
-        self._frame_buffer.append(frame)
-        cap = self.still_frame_count + 1
-        if len(self._frame_buffer) > cap:
-            self._frame_buffer = self._frame_buffer[-cap:]
+        self._frame_buffer.push(frame)
 
-        window = stable_window(self._frame_buffer, self.motion_threshold, self.still_frame_count)
+        window = self._frame_buffer.stable_window()
         if window is None:
-            moving = (
-                len(self._frame_buffer) >= 2
-                and frame_motion_score(self._frame_buffer[-2], self._frame_buffer[-1]) > self.motion_threshold
-            )
+            moving = self._frame_buffer.last_pair_still is False
             self.state = WatcherState.HANDS_OVER_BOARD if moving else WatcherState.IDLE_STILL
             return WatcherEvent(state=self.state)
 
@@ -842,13 +835,12 @@ class GameWatcher:
         if self.rack_detector is None:
             raise ValueError("record_rack needs a rack_detector; pass one to GameWatcher.__init__")
 
-        buffer = self._rack_frame_buffers.setdefault(player_id, [])
-        buffer.append(rack_frame)
-        cap = self.still_frame_count + 1
-        if len(buffer) > cap:
-            self._rack_frame_buffers[player_id] = buffer[-cap:]
+        buffer = self._rack_frame_buffers.setdefault(
+            player_id, StillnessTracker(self.motion_threshold, self.still_frame_count)
+        )
+        buffer.push(rack_frame)
 
-        window = stable_window(self._rack_frame_buffers[player_id], self.motion_threshold, self.still_frame_count)
+        window = buffer.stable_window()
         if window is None:
             return None
         # All frames in a stable window read the same by construction (the
