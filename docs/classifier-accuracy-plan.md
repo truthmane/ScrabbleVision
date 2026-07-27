@@ -383,6 +383,31 @@ two independent rounds**: a gentle continuation from the current checkpoint beat
 continuation settings (round 2's 72.7% regression) and training from scratch on the full dataset
 (this round's 53.7%/66.1%). Recalibrated temperature to `T ≈ 1.078`; checkpoint promoted.
 
+## Round 4 of real data: 10 more games across 8 tournaments, 91.7% → 93.4%
+
+**981 more real tiles harvested**, across 10 games deliberately chosen to span different
+tournaments (per explicit request), discovered via a different cross-tables.com player's
+"Annotated Games" page (`anno.php?p=11232`): Albany NY (two different years), Montreal QC (two
+different years), Lake George NY, Crescent City Cup LA, the 32nd National Championship Finals,
+the 11th Word Cup, and the 31st National Championship — 8 distinct tournament/date combinations,
+2019-2026. Same word-cross-referencing discipline as round 3 for matching each screenshot to its
+source `.gcg` (not assumed from list order); one of the ten needed `board_from_gcg_final` again
+(a withdrawn-play GCG).
+
+**Collected via a new batched calibration tool** (`generate_multi_click_tool_html`, new
+`multi-targets`/`multi-harvest` CLI subcommands, driven by a JSON manifest) built specifically for
+this round, at the user's request, after doing 10 boards one link/copy-paste at a time in round 3
+proved tedious. Walks through every board on one page, auto-advancing once a board's targets are
+clicked, ending in one combined JSON blob for the whole batch instead of one per board. One board
+in this batch got mis-clicked; the single-board `targets` tool still exists unchanged for exactly
+that case (regenerate just the one board, harvest it separately, same output shape).
+
+**Honest measurement, same held-out set as every round so far** (all Causeway tiles, never
+trained on): a gentle incremental continuation (2 epochs, `lr=1e-4`) from the round-3 checkpoint
+on just the 981 new tiles took held-out accuracy **91.7% (111/121) → 93.4% (113/121)**.
+Recalibrated temperature to `T ≈ 1.116`; checkpoint promoted. `training/data/real_tiles/` now at
+2,174 tiles total (1,193 → 2,174 this round).
+
 ## Pitfalls for the implementer (learned the hard way in this repo)
 
 - BGR (OpenCV, perception layer) vs RGB (PIL, training) — convert exactly once, at the

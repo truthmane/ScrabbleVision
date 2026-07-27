@@ -12,18 +12,19 @@ The per-cell letter classifier described in `docs/classifier-accuracy-plan.md`.
   automatically by `TileClassifierModel`, see below). Fitted on the same held-out set used to
   report accuracy — see the calibration caveat in `training/classify/calibrate.py`'s docstring.
 - **Training data**: synthetic renders (`training/synth_render`) pretrained, then fine-tuned
-  incrementally on real tile crops now committed at `training/data/real_tiles/` (1,193 tiles as
+  incrementally on real tile crops now committed at `training/data/real_tiles/` (2,174 tiles as
   of this checkpoint, see that directory's own README for exact per-venue provenance) — **the
   previous ~620-tile dataset this checkpoint's predecessor was built from no longer exists**; it
   lived only in an ephemeral per-session scratchpad and was lost between sessions.
   `training/data/real_tiles/` is committed specifically so this can't happen again — the actual
   data a checkpoint depends on should always be inspectable/extendable, not just the checkpoint
   itself.
-- **Honest accuracy**: **91.7%** (111/121) on a *venue-disjoint* held-out set — all Causeway
-  Challenge 2026 tiles (both tables) held out entirely; the model is a chain of two incremental
-  continuation fine-tunes, first on the 4 Mack Meller 2026 SPC games (392 tiles, 81.0% → 85.1% on
-  this same held-out set), then on 7 more cross-tables.com games (680 tiles, 85.1% → 91.7%) —
-  none of these training venues ever touch the held-out set.
+- **Honest accuracy**: **93.4%** (113/121) on a *venue-disjoint* held-out set — all Causeway
+  Challenge 2026 tiles (both tables) held out entirely; the model is a chain of three incremental
+  continuation fine-tunes, each measured on this same held-out set: the 4 Mack Meller 2026 SPC
+  games (392 tiles, 81.0% → 85.1%), 7 more cross-tables.com games (680 tiles, 85.1% → 91.7%), then
+  10 more spanning 8 distinct tournaments 2019-2026 (981 tiles, 91.7% → 93.4%) — none of these
+  training venues ever touch the held-out set.
 - **Catastrophic forgetting is real here, confirmed on two separate rounds now.** An identical
   fine-tune at the "normal" settings used historically (8 epochs, `lr=1e-3`) actively *regressed*
   held-out accuracy the first time this was tried (round 1: 72.7%, vs. 85.1% with gentle
