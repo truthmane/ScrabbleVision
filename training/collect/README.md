@@ -40,6 +40,61 @@ photographed against a plain/dark background; otherwise pick the four corners ma
 See `docs/classifier-accuracy-plan.md`'s Results section and the git history around the first
 data-collection pass for worked examples of both.
 
+### 3b. When automated/eyeballed calibration won't converge: `click_calibrate.py`
+
+Some venues defeat every automated corner-detection method — a board that's small on-screen,
+tilted, or shot at an angle can produce a homography that looks fine at a glance but is off by
+most of a cell width once you crop individual tiles (measured directly on a real 2026 Causeway
+Challenge frame: 7 different automated methods — color-mask contours, Hough-line rotation/pitch
+measurement, least-squares homography fits, even a ground-truth-driven grid-search optimization —
+all converged on "center cell perfect, edges drift into background," the signature of real
+non-uniform perspective distortion none of those methods can model). Guessing corner pixels from
+static screenshots doesn't fix this either — human visual/spatial judgment does, just not through
+a screenshot round-trip.
+
+**The key realization this tool acts on: you never need a human to identify *letters*.** Ground
+truth (a replayed `.gcg`, or a woogles.io broadcast's game document — see below) already tells you
+the exact letter at every occupied cell. The only unknown is *geometry* — where those known cells
+sit in the photo — and a sighted human clicking a handful of named cells directly on the image
+solves that in under a minute:
+
+```
+# Step 1: generate the clicker (targets are picked automatically — a handful of
+# occupied cells spread across the whole board via farthest-point sampling, not
+# all of them).
+python -m training.collect.click_calibrate targets FRAME.jpg \
+    --woogles-doc game_document.json --out clicker.html
+# (or --gcg some_game.gcg --move 25 instead of --woogles-doc)
+
+# Open clicker.html in a browser. It shows the frame and asks you to click each
+# named target cell in order ("click the T", "click the center star", ...),
+# then displays a JSON blob once you're done. Save that as clicks.json.
+
+# Step 2: fit a homography from the clicks (RANSAC over however many points you
+# gave it, so one imprecise click doesn't wreck the whole fit), harvest every
+# occupied cell, and build a spot-check montage automatically.
+python -m training.collect.click_calibrate harvest FRAME.jpg \
+    --woogles-doc game_document.json --clicks clicks.json \
+    --out-dir harvest/ --prefix my_venue
+```
+
+Always look at `harvest/_spotcheck_<prefix>.jpg` before adding anything to training data — the
+`harvest` command also prints each click's reprojection error, so a target that came back
+suspiciously high can be re-clicked without redoing the whole set.
+
+**Pulling ground truth from a woogles.io broadcast** (a good source independent of cross-tables.com/GCG
+files, useful when an event isn't cross-tables-indexed): any broadcast's per-game "Review" link is
+`woogles.io/anno/<id>`; the full move-by-move document, including the final board as a base64 byte
+array, is one POST away with no auth and no scraping:
+
+```
+curl -X POST https://woogles.io/api/omgwords_service.GameEventService/GetGameDocument \
+    -H 'Content-Type: application/json' -d '{"gameId": "<id-from-the-anno-URL>"}'
+```
+
+`board_from_woogles_document` in `click_calibrate.py` decodes that response directly into a real
+`BoardState`, so it plugs into the exact same `harvest_board_cells` used by GCG-sourced games.
+
 ## 4. Read ground truth precisely — don't eyeball a composite
 
 ```
