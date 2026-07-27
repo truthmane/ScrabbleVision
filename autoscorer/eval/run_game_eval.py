@@ -55,7 +55,7 @@ def run_and_evaluate(
     classifier_path: Path,
     player1_id: str,
     player2_id: str,
-    sample_fps: Optional[float] = 2.0,
+    sample_fps: Optional[float] = 0.2,
     mode: PublishMode = PublishMode.AUTONOMOUS,
     confidence_threshold: float = 0.9,
     max_frames: Optional[int] = None,
@@ -148,6 +148,8 @@ def run_and_evaluate(
         venue=venue_name,
         git_sha=_git_sha(),
         wall_clock_s=wall_clock,
+        sample_fps=sample_fps,
+        publish_mode=mode.value if hasattr(mode, "value") else str(mode),
     )
 
     return build_report(
@@ -163,6 +165,18 @@ def check_for_regressions(report: GameEvalReport, baseline: dict) -> List[str]:
     either direction between honest runs without either being wrong."""
     violations = []
     data = report.to_json_dict()
+    # A baseline captured at a different sampling rate is not comparable
+    # AT ALL -- the stillness gate is a frame count, so its wall-clock
+    # meaning scales with sample_fps, and the same code+video behaves
+    # completely differently across rates (see Provenance.sample_fps).
+    # Refuse loudly instead of reporting phantom regressions/improvements.
+    baseline_fps = (baseline.get("provenance") or {}).get("sample_fps")
+    report_fps = (data.get("provenance") or {}).get("sample_fps")
+    if baseline_fps is not None and report_fps is not None and baseline_fps != report_fps:
+        return [
+            f"NOT COMPARABLE: baseline was captured at sample_fps={baseline_fps}, this run at "
+            f"{report_fps} -- re-run with --sample-fps {baseline_fps} (or regenerate the baseline)"
+        ]
     if data["detected_turns"] < baseline["detected_turns"]:
         violations.append(f"detected_turns regressed: {data['detected_turns']} < {baseline['detected_turns']}")
     baseline_divergence = baseline["first_divergence_index"] if baseline["first_divergence_index"] is not None else 10**9
@@ -186,7 +200,7 @@ def main() -> None:
     parser.add_argument("--classifier", type=Path, default=Path("models/tile_classifier_v1.pt"))
     parser.add_argument("--player1", required=True)
     parser.add_argument("--player2", required=True)
-    parser.add_argument("--sample-fps", type=float, default=2.0)
+    parser.add_argument("--sample-fps", type=float, default=0.2, help="MUST match the rate the venue profile's stillness gate was tuned at (still_frame_count is a frame count, so its meaning in seconds scales with this) -- 0.2 is what every wespa_word_wars calibration run used; recorded in provenance either way")
     parser.add_argument("--mode", choices=list(PUBLISH_MODES), default="autonomous")
     parser.add_argument("--confidence-threshold", type=float, default=0.9)
     parser.add_argument("--max-frames", type=int, default=None)

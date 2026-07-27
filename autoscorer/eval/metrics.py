@@ -51,6 +51,17 @@ class Provenance:
     venue: Optional[str] = None
     git_sha: Optional[str] = None
     wall_clock_s: Optional[float] = None
+    sample_fps: Optional[float] = None
+    """Frame-sampling rate the run used. NOT optional bookkeeping: a
+    venue profile's stillness gate is a frame COUNT, so its real meaning
+    is `still_frame_count / sample_fps` seconds of stillness -- the same
+    profile behaves completely differently at a different rate (measured:
+    the same code+video+venue at 2.0 fps fragments multi-tile words that
+    read perfectly at the 0.2 fps the profile was tuned at, because 5
+    still frames means 2.5s instead of 25s). Two reports are only
+    comparable if this matches; its absence from early baselines caused a
+    full day of chasing a phantom regression."""
+    publish_mode: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -140,6 +151,8 @@ class GameEvalReport:
                 "venue": self.provenance.venue,
                 "git_sha": self.provenance.git_sha,
                 "wall_clock_s": self.provenance.wall_clock_s,
+                "sample_fps": self.provenance.sample_fps,
+                "publish_mode": self.provenance.publish_mode,
             },
         }
 
