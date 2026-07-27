@@ -8,6 +8,8 @@ import pytest
 from autoscorer.gamelogic.board import BoardState, Tile
 from autoscorer.perception.calibration.homography import CANONICAL_CELL_PX, cell_bounds
 from training.collect.click_calibrate import (
+    CENTER_SQUARE,
+    TRIPLE_WORD_SCORE_SQUARES,
     CalibrationTarget,
     board_from_woogles_document,
     build_spotcheck_montage,
@@ -16,7 +18,28 @@ from training.collect.click_calibrate import (
     harvest_labeled_cells,
     load_frame,
     pick_calibration_targets,
+    pick_fixed_board_targets,
 )
+
+
+def test_calibration_target_notation_matches_standard_square_format():
+    assert CalibrationTarget(row=7, col=7, label="x").notation == "H8"
+    assert CalibrationTarget(row=0, col=0, label="x").notation == "A1"
+    assert CalibrationTarget(row=14, col=14, label="x").notation == "O15"
+
+
+def test_pick_fixed_board_targets_returns_the_8_tws_squares_plus_center():
+    targets = pick_fixed_board_targets()
+    coords = {(t.row, t.col) for t in targets}
+
+    assert len(targets) == 9
+    assert coords == set(TRIPLE_WORD_SCORE_SQUARES) | {CENTER_SQUARE}
+
+
+def test_pick_fixed_board_targets_needs_no_board_or_ground_truth():
+    # The whole point: this must not require a BoardState/game document at all.
+    targets = pick_fixed_board_targets()
+    assert all(isinstance(t, CalibrationTarget) for t in targets)
 
 
 def test_load_frame_rotate_180_matches_cv2_directly(tmp_path):

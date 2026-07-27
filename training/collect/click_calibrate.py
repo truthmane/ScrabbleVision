@@ -5,22 +5,33 @@ perfect, edges drift" -- a signature of a board too small on-screen for
 any of those methods, not a bug to keep chasing).
 
 The insight this module acts on: **we never need a human to identify
-letters** -- ground truth (a woogles.io game document, or a replayed .gcg,
-same as `harvest_from_replay.py` already uses) already gives us the exact
-letter at every occupied cell. The only unknown is geometry: where those
-known cells sit in a given photo. A sighted human clicking a handful of
-named reference cells directly on the photo solves that in under a
-minute, far faster and more precisely than any automated corner-detection
-attempted here first.
+letters, or even to have a game's ground truth on hand, just to locate
+where the grid is.** Every standard 15x15 Scrabble board has the same 8
+Triple Word Score squares and center/start square in the same fixed
+positions, in every game, on every board of that design -- so the default
+calibration targets (`pick_fixed_board_targets`) need no ground truth at
+all, work on a completely empty board, and only need clicking ONCE per
+physical venue/camera setup, not once per game. (A fallback,
+`pick_calibration_targets`, targets spread-out *occupied* cells instead,
+for when premium squares happen to be covered or a venue's board doesn't
+use standard coloring -- that one does need a game's ground truth, a
+woogles.io game document or a replayed .gcg, same as
+`harvest_from_replay.py` already uses.) Either way, a sighted human
+clicking a handful of named reference points directly on the photo solves
+the geometry in under a minute, far faster and more precisely than any
+automated corner-detection attempted here first.
 
 Two-step, repeatable workflow (same shape for any future venue/frame):
 
-    1. `python -m training.collect.click_calibrate targets FRAME.jpg
-       --woogles-doc game_document.json --out clicker.html`
-       Opens/writes a self-contained HTML page. A human opens it in a
-       browser, clicks each named target cell in order (a fixed, small
-       set -- not all occupied cells), and copies the JSON blob the page
-       displays once done.
+    1. `python -m training.collect.click_calibrate targets FRAME.jpg --out clicker.html`
+       Opens/writes a self-contained HTML page prompting for the 8 TWS
+       squares + center, by standard notation ("H8", "A1", ...) -- a
+       physical board's own printed row/column labels make this faster and
+       less error-prone than hunting for a specific letter among a dozen
+       tiles. A human opens it in a browser, clicks each in order, and
+       copies the JSON blob the page displays once done. (Pass
+       `--use-occupied-cells --woogles-doc game_document.json` instead if
+       premium squares aren't usable in this particular frame.)
 
     2. `python -m training.collect.click_calibrate harvest FRAME.jpg
        --woogles-doc game_document.json --clicks clicks.json
@@ -32,7 +43,8 @@ Two-step, repeatable workflow (same shape for any future venue/frame):
        know which calibration method produced a given crop), and writes a
        labeled spot-check montage -- inspect that before ever adding the
        crops to training data, per this project's own hard-won batch3
-       lesson.
+       lesson. This step always needs ground truth (to know what letter
+       goes in each crop's filename), even when step 1 didn't.
 """
 from __future__ import annotations
 
@@ -47,6 +59,7 @@ import cv2
 import numpy as np
 
 from autoscorer.gamelogic.board import BoardState, Coord, Tile
+from autoscorer.gamelogic.notation import format_square
 from autoscorer.perception.calibration.homography import (
     CANONICAL_CELL_PX,
     BoardCalibration,
@@ -58,11 +71,57 @@ from training.collect.harvest_from_replay import BLANK_LABEL, harvest_board_cell
 class CalibrationTarget:
     row: int
     col: int
-    label: str  # the letter/BLANK a human should look for at this cell
+    label: str  # the letter/BLANK actually sitting at this cell -- a
+    # confirmation hint only, not the primary instruction; see `notation`.
+
+    @property
+    def notation(self) -> str:
+        """Standard tournament square notation ("H8", "A2", ...) -- this
+        project's own convention (`notation.format_square`) for showing a
+        coordinate to a human. The primary click instruction: counting a
+        board's own printed row/column labels (nearly every tournament
+        board has them) is faster and less error-prone than hunting for a
+        specific letter among a dozen tiles, especially rotated/tilted or
+        photographed at low resolution."""
+        return format_square((self.row, self.col))
+
+
+TRIPLE_WORD_SCORE_SQUARES: Tuple[Coord, ...] = (
+    (0, 0), (0, 7), (0, 14),
+    (7, 0),         (7, 14),
+    (14, 0), (14, 7), (14, 14),
+)
+"""Fixed on every standard 15x15 Scrabble board, in every game -- unlike an
+occupied cell's letter, these never depend on which game or move you
+happen to have a frame from."""
+
+CENTER_SQUARE: Coord = (7, 7)
+
+
+def pick_fixed_board_targets() -> List[CalibrationTarget]:
+    """The 8 Triple Word Score squares plus the center/start square -- 9
+    points, always in the same place on any standard board, regardless of
+    game state. This is the preferred calibration target set: unlike
+    `pick_calibration_targets` (which needs a game's ground truth just to
+    know where its targets ARE), these need no ground truth to locate at
+    all, work equally well on a completely empty board (arguably better,
+    since an empty premium square's own color/print is maximally
+    unobstructed), and -- most importantly for scaling data -- only need
+    clicking ONCE per venue/camera setup, not once per game, since a fixed
+    camera sees these same 9 physical points in every frame it ever
+    captures. `label` names the premium-square type so a human matches by
+    color/print (red/pink "TRIPLE WORD SCORE" printing, or the center
+    star), not by hunting for a specific letter."""
+    targets = [CalibrationTarget(row=r, col=c, label="TWS (red/pink)") for r, c in TRIPLE_WORD_SCORE_SQUARES]
+    targets.append(CalibrationTarget(row=CENTER_SQUARE[0], col=CENTER_SQUARE[1], label="center star"))
+    return targets
 
 
 def pick_calibration_targets(board: BoardState, count: int = 8) -> List[CalibrationTarget]:
-    """Greedy farthest-point sampling over the board's own occupied cells --
+    """Fallback for when `pick_fixed_board_targets` won't work -- e.g. every
+    premium square happens to be covered by a tile in the only frame you
+    have, or a venue's board doesn't use standard premium-square coloring.
+    Greedy farthest-point sampling over the board's own occupied cells --
     spreads targets across the whole grid (corners, edges, and middle all
     represented) regardless of this specific board's layout, so it works
     for any game rather than assuming e.g. a clean row-0/row-14/col-0/col-14
@@ -200,7 +259,9 @@ def generate_click_tool_html(image: np.ndarray, targets: List[CalibrationTarget]
     tool exists to eliminate).
     """
     data_uri = _image_to_base64_data_uri(image)
-    targets_json = json.dumps([{"row": t.row, "col": t.col, "label": t.label} for t in targets])
+    targets_json = json.dumps(
+        [{"row": t.row, "col": t.col, "label": t.label, "notation": t.notation} for t in targets]
+    )
     html = f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>calibration clicker</title>
 <style>
@@ -218,7 +279,8 @@ def generate_click_tool_html(image: np.ndarray, targets: List[CalibrationTarget]
   textarea {{ width:90%; height:200px; font-family:monospace; font-size:13px; }}
 </style></head>
 <body>
-<div id="bar">Click the <b><span id="target-label">?</span></b> tile
+<div id="bar">Click <b><span id="target-notation">?</span></b>
+  (<span id="target-label">?</span>)
   (<span id="target-idx">0</span> / <span id="target-total">0</span>) &mdash;
   zoom with ctrl/cmd+scroll or your browser's native zoom before clicking for precision.</div>
 <div id="wrap"><img id="img" src="{data_uri}"></div>
@@ -243,6 +305,7 @@ function updateBar() {{
     );
     return;
   }}
+  document.getElementById('target-notation').textContent = targets[idx].notation;
   document.getElementById('target-label').textContent = targets[idx].label;
   document.getElementById('target-idx').textContent = idx + 1;
   document.getElementById('target-total').textContent = targets.length;
@@ -262,7 +325,7 @@ img.addEventListener('click', (e) => {{
   mark.style.left = (e.clientX - rect.left) + 'px';
   mark.style.top = (e.clientY - rect.top) + 'px';
   const lbl = document.createElement('span');
-  lbl.textContent = (idx+1) + ':' + targets[idx].label;
+  lbl.textContent = (idx+1) + ':' + targets[idx].notation;
   mark.appendChild(lbl);
   wrap.appendChild(mark);
 
@@ -353,7 +416,7 @@ def build_spotcheck_montage(harvest_dir: Path, out_path: Path, cell_px: int = 10
     cv2.imwrite(str(out_path), canvas)
 
 
-def _board_from_args(args: argparse.Namespace) -> BoardState:
+def _board_from_args(args: argparse.Namespace) -> Optional[BoardState]:
     if args.woogles_doc:
         return board_from_woogles_document(args.woogles_doc, through_event=args.woogles_through_event)
     if args.gcg:
@@ -361,7 +424,7 @@ def _board_from_args(args: argparse.Namespace) -> BoardState:
         moves = read_gcg_moves(args.gcg)
         turns = replay_gcg_game(moves)
         return turns[args.move - 1].board_after
-    raise SystemExit("must pass either --woogles-doc or (--gcg and --move)")
+    return None
 
 
 def main() -> None:
@@ -375,7 +438,11 @@ def main() -> None:
                               help="reconstruct board state after events[:N] instead of the final (often over-cluttered) board")
     targets_cmd.add_argument("--gcg", type=Path, default=None)
     targets_cmd.add_argument("--move", type=int, default=None)
-    targets_cmd.add_argument("--count", type=int, default=8)
+    targets_cmd.add_argument("--use-occupied-cells", action="store_true",
+                              help="target spread-out occupied cells (needs --woogles-doc/--gcg) instead of "
+                                   "the default: the 8 fixed Triple Word Score squares + center, which need "
+                                   "no ground truth at all and only need clicking once per venue/camera")
+    targets_cmd.add_argument("--count", type=int, default=8, help="only used with --use-occupied-cells")
     targets_cmd.add_argument("--rotate", type=int, choices=[0, 90, 180, 270], default=0,
                               help="pre-rotate the frame so letters read naturally -- must match --rotate at harvest time")
     targets_cmd.add_argument("--out", type=Path, required=True)
@@ -394,18 +461,27 @@ def main() -> None:
     harvest_cmd.add_argument("--prefix", required=True)
 
     args = parser.parse_args()
-    board = _board_from_args(args)
 
     if args.command == "targets":
-        targets = pick_calibration_targets(board, count=args.count)
+        if args.use_occupied_cells:
+            board = _board_from_args(args)
+            if board is None:
+                raise SystemExit("--use-occupied-cells needs --woogles-doc or (--gcg and --move)")
+            targets = pick_calibration_targets(board, count=args.count)
+        else:
+            targets = pick_fixed_board_targets()
         image = load_frame(args.image, rotate=args.rotate)
         generate_click_tool_html(image, targets, args.out)
         print(f"wrote {args.out} with {len(targets)} targets:")
         for t in targets:
-            print(f"  ({t.row},{t.col}) = {t.label}")
+            print(f"  {t.notation} ({t.label})")
         return
 
     if args.command == "harvest":
+        board = _board_from_args(args)
+        if board is None:
+            raise SystemExit("harvest needs ground truth: --woogles-doc or (--gcg and --move)")
+
         clicks_data = json.loads(Path(args.clicks).read_text())
         clicks = [(c["row"], c["col"], c["x"], c["y"]) for c in clicks_data]
         calibration, errors = fit_homography_from_clicks(clicks)

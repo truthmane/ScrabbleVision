@@ -52,31 +52,40 @@ non-uniform perspective distortion none of those methods can model). Guessing co
 static screenshots doesn't fix this either — human visual/spatial judgment does, just not through
 a screenshot round-trip.
 
-**The key realization this tool acts on: you never need a human to identify *letters*.** Ground
-truth (a replayed `.gcg`, or a woogles.io broadcast's game document — see below) already tells you
-the exact letter at every occupied cell. The only unknown is *geometry* — where those known cells
-sit in the photo — and a sighted human clicking a handful of named cells directly on the image
-solves that in under a minute:
+**The key realization this tool acts on: you never need a human to identify *letters*, or even to
+have a game's ground truth on hand, just to locate the grid.** Every standard board has the same 8
+Triple Word Score squares + center/start square in the same fixed positions in every game — so the
+*default* calibration targets need no ground truth at all, work on a totally empty board, and only
+need clicking **once per physical venue/camera setup**, not once per game:
 
 ```
-# Step 1: generate the clicker (targets are picked automatically — a handful of
-# occupied cells spread across the whole board via farthest-point sampling, not
-# all of them).
-python -m training.collect.click_calibrate targets FRAME.jpg \
-    --woogles-doc game_document.json --out clicker.html
-# (or --gcg some_game.gcg --move 25 instead of --woogles-doc)
+# Step 1: generate the clicker. No game data needed for the default (fixed-square) targets.
+python -m training.collect.click_calibrate targets FRAME.jpg --out clicker.html
 
-# Open clicker.html in a browser. It shows the frame and asks you to click each
-# named target cell in order ("click the T", "click the center star", ...),
-# then displays a JSON blob once you're done. Save that as clicks.json.
+# Open clicker.html in a browser. It shows the frame and asks you to click each of
+# the 9 named squares in order, by standard notation ("Click H8 (center star)",
+# "Click A1 (TWS (red/pink))", ...) -- a board's own printed row/column labels make
+# this faster and less error-prone than hunting for a specific letter among tiles.
+# It then displays a JSON blob once you're done. Save that as clicks.json.
 
 # Step 2: fit a homography from the clicks (RANSAC over however many points you
 # gave it, so one imprecise click doesn't wreck the whole fit), harvest every
-# occupied cell, and build a spot-check montage automatically.
+# occupied cell (this step DOES need ground truth, to label the crops), and build
+# a spot-check montage automatically.
 python -m training.collect.click_calibrate harvest FRAME.jpg \
     --woogles-doc game_document.json --clicks clicks.json \
     --out-dir harvest/ --prefix my_venue
+# (or --gcg some_game.gcg --move 25 instead of --woogles-doc)
 ```
+
+Since the fixed-square calibration only depends on the camera, not the game, do step 1 once per
+venue and reuse the resulting `clicks.json` (and the homography it fits) across every game/frame
+from that same camera — that's the actual point for scaling data collection.
+
+If a frame happens to have every premium square covered by tiles (or a venue's board doesn't use
+standard coloring), fall back to occupied-cell targets instead: add `--use-occupied-cells
+--woogles-doc game_document.json` (or `--gcg`/`--move`) to the `targets` command — picks a handful
+of spread-out occupied cells via farthest-point sampling instead of the fixed squares.
 
 Always look at `harvest/_spotcheck_<prefix>.jpg` before adding anything to training data — the
 `harvest` command also prints each click's reprojection error, so a target that came back
