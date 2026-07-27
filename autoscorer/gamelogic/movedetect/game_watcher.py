@@ -198,19 +198,20 @@ cells), something is still genuinely stuck -- emit a `STALLED` event and
 force-quarantine every confirmed cell with any failure history, rather
 than continuing to retry silently forever."""
 
-SOFT_CELL_MIN_CONFIDENCE = 0.5
+SOFT_CELL_MIN_CONFIDENCE = 0.7
 """A SOFT cell (see `read_new_cells_voted`) is only usable as an
 in-line extension of a HARD run if its own temporal-voted top label also
-clears this confidence floor -- majority occupancy support alone isn't
-enough. A real full-game run found that a soft-extended candidate is
-ranked *ahead* of the plain HARD one (it's longer -- see the ranking
-comment below), and phonies being legal means a nonsense extension can't
-be rejected on spelling alone; if the extension is real content and not
-just an occupancy near-miss, an ordinary letter should still be visible
-enough to the classifier that its own confidence says so. Not yet
-re-tuned against real footage beyond confirming it removes the
-regression this was added for -- treat as a starting point, same as the
-occupancy thresholds."""
+clears this confidence floor -- majority/all-but-one occupancy support
+alone isn't enough. A real full-game run found that a soft-extended
+candidate is ranked *ahead* of the plain HARD one (it's longer -- see
+the ranking comment below), and phonies being legal means a nonsense
+extension can't be rejected on spelling alone; if the extension is real
+content and not just an occupancy near-miss, an ordinary letter should
+still be visible enough to the classifier that its own confidence says
+so. Raised from an initial 0.5 after a full real-game comparison showed
+that bar still let through more spurious detections than it recovered
+real ones; not yet re-tuned beyond removing that regression's mechanism
+-- treat as a starting point, same as the occupancy thresholds."""
 
 
 class GameWatcher:

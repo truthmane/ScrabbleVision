@@ -213,18 +213,22 @@ def read_new_cells_voted(
         for col in range(BOARD_SIZE)
         if votes[(row, col)] == num_frames and board_before.is_empty((row, col))
     }
-    # SOFT requires a strict MAJORITY of frames, not merely "more than
-    # zero" -- a real-video run found the earlier any-vote-at-all bar let
-    # a single sporadic frame (ordinary compression/lighting noise, not a
-    # real tile) qualify a neighbor as extension material, and since
-    # `GameWatcher` ranks a soft-extended candidate by cell count first
-    # (longer wins -- see its docstring on why), a persistent noisy
-    # neighbor next to a real placement could win the ranking on *every*
-    # observation, not just once. Requiring the majority to agree pushes
-    # this back toward "most of the window saw something here" (matching
-    # the real RAGBOLT case: diff 38.96 against a 38.0 threshold, a bare
-    # miss, not a single-frame blip) and away from "one frame flickered."
-    soft_min_votes = num_frames // 2 + 1
+    # SOFT requires ALL BUT ONE frame to agree, not merely a bare
+    # majority -- a real-video run found the earlier any-vote-at-all bar
+    # let a single sporadic frame (ordinary compression/lighting noise,
+    # not a real tile) qualify a neighbor as extension material, and
+    # since `GameWatcher` ranks a soft-extended candidate by cell count
+    # first (longer wins -- see its docstring on why), a persistent
+    # noisy neighbor next to a real placement could win the ranking on
+    # *every* observation, not just once. A bare majority (e.g. 3 of 5)
+    # measurably still let too much noise through on the real broadcast
+    # (more spurious detections, not fewer, in a full-game comparison);
+    # requiring all but one frame pushes this to "missed unanimity by
+    # the narrowest possible margin" -- exactly the real RAGBOLT case
+    # (diff 38.96 against a 38.0 threshold, a bare miss in what was
+    # otherwise a clean read) -- while still excluding a cell that only
+    # showed up in a minority of frames.
+    soft_min_votes = max(1, num_frames - 1)
     soft_neighbors = set()
     for row, col in hard_cells:
         for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
