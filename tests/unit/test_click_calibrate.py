@@ -40,6 +40,24 @@ def test_pick_fixed_board_targets_needs_no_board_or_ground_truth():
     # The whole point: this must not require a BoardState/game document at all.
     targets = pick_fixed_board_targets()
     assert all(isinstance(t, CalibrationTarget) for t in targets)
+    assert all(t.label in ("TWS (red/pink)", "center star") for t in targets)
+
+
+def test_pick_fixed_board_targets_shows_the_real_letter_when_a_target_is_covered():
+    # An endgame board commonly has tiles sitting on several premium
+    # squares -- the prompt must show what's really there, not claim
+    # you'll see red/pink printing a tile is actually covering.
+    board = BoardState({
+        (0, 0): Tile("Q"),
+        (7, 7): Tile("Z", is_blank=True),
+    })
+    targets = pick_fixed_board_targets(board)
+    by_coord = {(t.row, t.col): t for t in targets}
+
+    assert by_coord[(0, 0)].label == "Q"
+    assert by_coord[(7, 7)].label == "BLANK"
+    # An uncovered TWS square still gets the generic description.
+    assert by_coord[(0, 7)].label == "TWS (red/pink)"
 
 
 def test_load_frame_rotate_180_matches_cv2_directly(tmp_path):

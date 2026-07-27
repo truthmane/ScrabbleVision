@@ -98,7 +98,7 @@ happen to have a frame from."""
 CENTER_SQUARE: Coord = (7, 7)
 
 
-def pick_fixed_board_targets() -> List[CalibrationTarget]:
+def pick_fixed_board_targets(board: Optional[BoardState] = None) -> List[CalibrationTarget]:
     """The 8 Triple Word Score squares plus the center/start square -- 9
     points, always in the same place on any standard board, regardless of
     game state. This is the preferred calibration target set: unlike
@@ -109,11 +109,28 @@ def pick_fixed_board_targets() -> List[CalibrationTarget]:
     unobstructed), and -- most importantly for scaling data -- only need
     clicking ONCE per venue/camera setup, not once per game, since a fixed
     camera sees these same 9 physical points in every frame it ever
-    captures. `label` names the premium-square type so a human matches by
-    color/print (red/pink "TRIPLE WORD SCORE" printing, or the center
-    star), not by hunting for a specific letter."""
-    targets = [CalibrationTarget(row=r, col=c, label="TWS (red/pink)") for r, c in TRIPLE_WORD_SCORE_SQUARES]
-    targets.append(CalibrationTarget(row=CENTER_SQUARE[0], col=CENTER_SQUARE[1], label="center star"))
+    captures (**as long as the camera hasn't physically moved/reframed
+    between the calibrated frame and the one you harvest** -- verified
+    directly on a real Causeway broadcast that this doesn't always hold
+    across an entire video; recalibrate whenever you switch to a
+    genuinely different frame unless you've confirmed the framing is
+    identical).
+
+    `board`, if given, makes the click prompt honest when a target happens
+    to be covered by an already-placed tile (common on an endgame board,
+    where several premium squares are typically occupied by then) --
+    shows the real sitting letter instead of claiming you'll see red/pink
+    printing that a tile is actually covering. Omit it (the default) only
+    when you genuinely have no ground truth yet, e.g. calibrating from a
+    still-empty board before a game has even started."""
+    targets = []
+    for row, col in TRIPLE_WORD_SCORE_SQUARES:
+        tile = board.get((row, col)) if board is not None else None
+        label = (BLANK_LABEL if tile.is_blank else tile.letter) if tile else "TWS (red/pink)"
+        targets.append(CalibrationTarget(row=row, col=col, label=label))
+    center_tile = board.get(CENTER_SQUARE) if board is not None else None
+    center_label = (BLANK_LABEL if center_tile.is_blank else center_tile.letter) if center_tile else "center star"
+    targets.append(CalibrationTarget(row=CENTER_SQUARE[0], col=CENTER_SQUARE[1], label=center_label))
     return targets
 
 
@@ -277,12 +294,17 @@ def generate_click_tool_html(image: np.ndarray, targets: List[CalibrationTarget]
                 background:#000; padding:0 3px; border-radius:3px; white-space:nowrap; }}
   #done {{ padding:16px; }}
   textarea {{ width:90%; height:200px; font-family:monospace; font-size:13px; }}
+  #rotate-btn {{ margin-left:12px; }}
+  #img {{ transform-origin: center center; }}
 </style></head>
 <body>
 <div id="bar">Click <b><span id="target-notation">?</span></b>
   (<span id="target-label">?</span>)
   (<span id="target-idx">0</span> / <span id="target-total">0</span>) &mdash;
-  zoom with ctrl/cmd+scroll or your browser's native zoom before clicking for precision.</div>
+  zoom with ctrl/cmd+scroll or your browser's native zoom before clicking for precision.
+  <button id="rotate-btn" type="button">&#8635; Rotate view</button>
+  <span style="color:#aaa">(if the board looks upside-down/sideways -- click before you start clicking targets)</span>
+</div>
 <div id="wrap"><img id="img" src="{data_uri}"></div>
 <div id="done" style="display:none">
   <h3>All targets clicked. Copy this JSON for the harvest step:</h3>
@@ -291,9 +313,20 @@ def generate_click_tool_html(image: np.ndarray, targets: List[CalibrationTarget]
 <script>
 const targets = {targets_json};
 let idx = 0;
+let viewRotation = 0;  // degrees, CSS-clockwise; purely visual, click math below inverts it
 const results = [];
 const img = document.getElementById('img');
 const wrap = document.getElementById('wrap');
+
+document.getElementById('rotate-btn').addEventListener('click', () => {{
+  if (idx > 0) {{
+    alert('Rotate the view before your first click, not partway through -- ' +
+          'reload the page to start over if you need to change it now.');
+    return;
+  }}
+  viewRotation = (viewRotation + 90) % 360;
+  img.style.transform = 'rotate(' + viewRotation + 'deg)';
+}});
 
 function updateBar() {{
   if (idx >= targets.length) {{
@@ -314,10 +347,24 @@ function updateBar() {{
 img.addEventListener('click', (e) => {{
   if (idx >= targets.length) return;
   const rect = img.getBoundingClientRect();
-  const scaleX = img.naturalWidth / rect.width;
-  const scaleY = img.naturalHeight / rect.height;
-  const nativeX = (e.clientX - rect.left) * scaleX;
-  const nativeY = (e.clientY - rect.top) * scaleY;
+  // rect is the ROTATED element's on-screen box; its center is invariant
+  // under rotation, so recover the click's offset from that center, then
+  // invert the CSS rotation to get back to the image's own (unrotated)
+  // layout coordinates, then scale by naturalWidth/offsetWidth -- offsetWidth
+  // is the pre-transform CSS layout size, unaffected by the rotation, unlike
+  // rect.width/height which swap for a 90/270 rotation.
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  const dx = e.clientX - cx;
+  const dy = e.clientY - cy;
+  const rad = -viewRotation * Math.PI / 180;
+  const localX = dx * Math.cos(rad) - dy * Math.sin(rad);
+  const localY = dx * Math.sin(rad) + dy * Math.cos(rad);
+  const layoutW = img.offsetWidth, layoutH = img.offsetHeight;
+  const scaleX = img.naturalWidth / layoutW;
+  const scaleY = img.naturalHeight / layoutH;
+  const nativeX = (localX + layoutW / 2) * scaleX;
+  const nativeY = (localY + layoutH / 2) * scaleY;
   results.push([nativeX, nativeY]);
 
   const mark = document.createElement('div');
@@ -463,13 +510,15 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "targets":
+        board = _board_from_args(args)
         if args.use_occupied_cells:
-            board = _board_from_args(args)
             if board is None:
                 raise SystemExit("--use-occupied-cells needs --woogles-doc or (--gcg and --move)")
             targets = pick_calibration_targets(board, count=args.count)
         else:
-            targets = pick_fixed_board_targets()
+            # board may be None here -- fine, pick_fixed_board_targets falls
+            # back to generic premium-square descriptions in that case.
+            targets = pick_fixed_board_targets(board)
         image = load_frame(args.image, rotate=args.rotate)
         generate_click_tool_html(image, targets, args.out)
         print(f"wrote {args.out} with {len(targets)} targets:")
