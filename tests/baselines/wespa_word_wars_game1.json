@@ -1,119 +1,272 @@
 {
   "real_plays": 21,
-  "detected_turns": 25,
-  "matched_1to1": 14,
+  "detected_turns": 50,
+  "matched_1to1": 11,
   "merged": 0,
-  "split": 3,
-  "missed": 4,
-  "spurious": 3,
-  "first_divergence_index": 7,
-  "cell_precision_macro": 0.9642857142857143,
-  "cell_recall_macro": 0.9142857142857144,
-  "cell_f1_macro": 0.9311224489795918,
-  "cell_precision_micro": 0.9821428571428571,
-  "cell_recall_micro": 0.9016393442622951,
-  "cell_f1_micro": 0.9401709401709402,
-  "letter_accuracy": 0.8727272727272727,
-  "letter_correct": 48,
-  "letter_total": 55,
+  "split": 10,
+  "missed": 0,
+  "spurious": 12,
+  "first_divergence_index": 2,
+  "cell_precision_macro": 1.0,
+  "cell_recall_macro": 0.6826839826839827,
+  "cell_f1_macro": 0.75,
+  "cell_precision_micro": 1.0,
+  "cell_recall_micro": 0.6170212765957447,
+  "cell_f1_micro": 0.763157894736842,
+  "letter_accuracy": 0.7586206896551724,
+  "letter_correct": 22,
+  "letter_total": 29,
   "blank_recovered": 0,
   "blank_total": 0,
-  "exact_score_matches": 9,
+  "exact_score_matches": 1,
   "score_abs_errors": [
     0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    18,
-    0,
-    0,
-    14,
+    2,
+    2,
+    37,
+    16,
+    10,
     12,
-    4,
-    0,
-    2
+    16,
+    17,
+    86,
+    3
   ],
   "final_cumulative_drift": {
-    "AdamLogan": -148,
-    "NigelRichards": -156
+    "AdamLogan": -125,
+    "NigelRichards": -197
   },
   "final_board_correct": 56,
   "final_board_truth_total": 95,
-  "final_board_wrong": 11,
-  "final_board_missing": 28,
+  "final_board_wrong": 25,
+  "final_board_missing": 14,
   "final_board_extra": 0,
   "stalls": [
     {
-      "start_frame": 261,
-      "length": 3,
+      "start_frame": 1007,
+      "length": 1,
       "reason": "placement is not connected to any existing tile",
       "attempted_squares": [
-        "O10",
-        "O11",
-        "O5",
-        "O6",
-        "O7",
-        "O8",
-        "O9"
+        "E12"
       ]
     },
     {
-      "start_frame": 386,
+      "start_frame": 1482,
       "length": 3,
       "reason": "placement is not connected to any existing tile",
       "attempted_squares": [
-        "N10",
-        "N11",
+        "H14",
+        "H15"
+      ]
+    },
+    {
+      "start_frame": 1643,
+      "length": 3,
+      "reason": "placement is not connected to any existing tile",
+      "attempted_squares": [
+        "J10"
+      ]
+    },
+    {
+      "start_frame": 3066,
+      "length": 2,
+      "reason": "placement is not connected to any existing tile",
+      "attempted_squares": [
+        "C15",
+        "D15"
+      ]
+    },
+    {
+      "start_frame": 3069,
+      "length": 1,
+      "reason": "placement is not connected to any existing tile",
+      "attempted_squares": [
+        "C15",
+        "D15",
+        "E15"
+      ]
+    },
+    {
+      "start_frame": 3070,
+      "length": 1,
+      "reason": "placement is not connected to any existing tile",
+      "attempted_squares": [
+        "E15"
+      ]
+    },
+    {
+      "start_frame": 3390,
+      "length": 2,
+      "reason": "a detected tile is a blank -- letter unknown until an operator confirms what it's played as",
+      "attempted_squares": [
+        "K6",
+        "K8"
+      ]
+    },
+    {
+      "start_frame": 3392,
+      "length": 1,
+      "reason": "a detected tile is a blank -- letter unknown until an operator confirms what it's played as",
+      "attempted_squares": [
+        "K8"
+      ]
+    },
+    {
+      "start_frame": 3745,
+      "length": 3,
+      "reason": "placement is not connected to any existing tile",
+      "attempted_squares": [
         "N12",
-        "N13",
-        "N14",
+        "N13"
+      ]
+    },
+    {
+      "start_frame": 3749,
+      "length": 3,
+      "reason": "placement is not connected to any existing tile",
+      "attempted_squares": [
         "N15"
       ]
     },
     {
-      "start_frame": 413,
-      "length": 2,
-      "reason": "placement is not connected to any existing tile",
-      "attempted_squares": [
-        "K8"
-      ]
-    },
-    {
-      "start_frame": 413,
+      "start_frame": 3760,
       "length": 1,
       "reason": "placement is not connected to any existing tile",
       "attempted_squares": [
-        "K8"
+        "O15"
       ]
     },
     {
-      "start_frame": 430,
-      "length": 1,
-      "reason": "placement is not connected to any existing tile",
+      "start_frame": 3761,
+      "length": 2,
+      "reason": "a detected tile is a blank -- letter unknown until an operator confirms what it's played as",
       "attempted_squares": [
-        "E14",
-        "F14"
+        "M12"
       ]
     },
     {
-      "start_frame": 431,
+      "start_frame": 3763,
+      "length": 1,
+      "reason": "a detected tile is a blank -- letter unknown until an operator confirms what it's played as",
+      "attempted_squares": [
+        "N14"
+      ]
+    },
+    {
+      "start_frame": 3766,
       "length": 2,
       "reason": "placement is not connected to any existing tile",
       "attempted_squares": [
-        "E14"
+        "M13"
+      ]
+    },
+    {
+      "start_frame": 4042,
+      "length": 1,
+      "reason": "a detected tile is a blank -- letter unknown until an operator confirms what it's played as",
+      "attempted_squares": [
+        "K7"
+      ]
+    },
+    {
+      "start_frame": 4050,
+      "length": 1,
+      "reason": "placement is not connected to any existing tile",
+      "attempted_squares": [
+        "K6"
+      ]
+    },
+    {
+      "start_frame": 4060,
+      "length": 1,
+      "reason": "a detected tile is a blank -- letter unknown until an operator confirms what it's played as",
+      "attempted_squares": [
+        "E13"
+      ]
+    },
+    {
+      "start_frame": 4106,
+      "length": 3,
+      "reason": "placement is not connected to any existing tile",
+      "attempted_squares": [
+        "B14"
+      ]
+    },
+    {
+      "start_frame": 4116,
+      "length": 3,
+      "reason": "a detected tile is a blank -- letter unknown until an operator confirms what it's played as",
+      "attempted_squares": [
+        "F15"
+      ]
+    },
+    {
+      "start_frame": 4282,
+      "length": 3,
+      "reason": "placement is not connected to any existing tile",
+      "attempted_squares": [
+        "M9"
+      ]
+    },
+    {
+      "start_frame": 4285,
+      "length": 2,
+      "reason": "placement is not connected to any existing tile",
+      "attempted_squares": [
+        "L10",
+        "L11"
+      ]
+    },
+    {
+      "start_frame": 4287,
+      "length": 1,
+      "reason": "a detected tile is a blank -- letter unknown until an operator confirms what it's played as",
+      "attempted_squares": [
+        "L10"
+      ]
+    },
+    {
+      "start_frame": 4288,
+      "length": 1,
+      "reason": "placement is not connected to any existing tile",
+      "attempted_squares": [
+        "M12"
+      ]
+    },
+    {
+      "start_frame": 4291,
+      "length": 3,
+      "reason": "placement is not connected to any existing tile",
+      "attempted_squares": [
+        "M14"
+      ]
+    },
+    {
+      "start_frame": 4304,
+      "length": 1,
+      "reason": "a detected tile is a blank -- letter unknown until an operator confirms what it's played as",
+      "attempted_squares": [
+        "L13"
+      ]
+    },
+    {
+      "start_frame": 4305,
+      "length": 2,
+      "reason": "a detected tile is a blank -- letter unknown until an operator confirms what it's played as",
+      "attempted_squares": [
+        "L13",
+        "L14"
       ]
     }
   ],
   "longest_stall": 3,
-  "operator_routed_fraction": 0.28,
+  "operator_routed_fraction": 0.2,
   "provenance": {
     "lexicon_name": "csw24",
     "lexicon_word_count": 280887,
     "classifier_checkpoint": "models/tile_classifier_v1.pt",
     "venue": "wespa_word_wars",
-    "git_sha": "bd7d143",
-    "wall_clock_s": 387.31087589263916
+    "git_sha": "56f75b2",
+    "wall_clock_s": 835.2281031608582
   }
 }
