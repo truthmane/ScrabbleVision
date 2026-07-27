@@ -324,6 +324,47 @@ def test_reference_adapts_to_lighting_drift_in_still_empty_cells(tmp_path):
     assert watcher.board.is_blank_board(), "incremental drift the reference already tracked must not misread as a placement"
 
 
+def test_adaptive_occupancy_tracker_does_not_block_a_genuine_placement(tmp_path):
+    """WS3 items 3-4: an AdaptiveOccupancyTracker, when supplied, gates
+    HARD candidates through its own per-cell hysteresis/adaptive-
+    threshold decision alongside the existing vote-based tiers (see
+    GameWatcher.__init__'s docstring). The empty->occupied transition is
+    deliberately eager (no hysteresis going INTO occupied), so a real,
+    freshly-placed tile must commit normally on its first confirmed
+    sighting, exactly as without the tracker -- this is the regression
+    test proving the opt-in feature doesn't silently swallow real moves.
+    """
+    from autoscorer.perception.occupancy.adaptive import AdaptiveOccupancyTracker
+
+    classifier = _train_tiny_classifier(tmp_path)
+    gateway = PublishGateway(mode=PublishMode.AUTONOMOUS, confidence_threshold=0.9)
+    watcher = GameWatcher(
+        calibration=IDENTITY_CALIBRATION,
+        reference_board=_blank_board_image(),
+        classifier=classifier,
+        publish_gateway=gateway,
+        still_frame_count=3,
+        adaptive_occupancy_tracker=AdaptiveOccupancyTracker(),
+    )
+    rng = random.Random(7)
+
+    empty = _blank_board_image()
+    for _ in range(3):
+        watcher.observe_board_frame(empty.copy(), player_id="p1")
+
+    watcher.observe_board_frame(_blank_board_image(), player_id="p1")
+    placed = _blank_board_image()
+    _place_tile(placed, *CENTER, "A", rng)
+    events = [watcher.observe_board_frame(placed.copy(), player_id="p1") for _ in range(4)]
+
+    final = events[-1]
+    assert final.state == WatcherState.APPLIED
+    assert final.needs_operator is False
+    assert final.scored_move is not None
+    assert final.scored_move.candidate.new_cells == (CENTER,)
+    assert watcher.board.get(CENTER).letter == "A"
+
+
 def test_new_cells_hooking_through_an_existing_tile_cluster_together(tmp_path):
     """Regression test for a bug in the clustering fix itself, found
     immediately on the next real-game re-run: clustering only grouped new

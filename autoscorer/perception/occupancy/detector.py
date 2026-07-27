@@ -19,7 +19,8 @@ of them -- a cell only counts as occupied if it looks different from
 """
 from __future__ import annotations
 
-from typing import Dict, List, Sequence, Union
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Sequence, Union
 
 import cv2
 import numpy as np
@@ -61,13 +62,37 @@ def _to_gray_float(image: np.ndarray) -> np.ndarray:
 
 
 def occupancy_scores(cell_crop: np.ndarray, reference_crop: np.ndarray) -> Dict[str, float]:
-    """Two complementary signals, higher = more likely occupied:
+    """Four complementary signals, higher = more likely occupied:
     - `diff`: mean absolute pixel difference from the known-empty reference
       (catches a tile that changes the cell's overall brightness/color).
     - `gradient`: local edge/texture strength within the current crop alone
       (catches a tile even if its average brightness happens to be close
       to the empty square's, since a printed glyph still has sharp edges
       an empty square doesn't).
+    - `edge_diff`: mean absolute difference between the current and
+      reference crops' own Sobel-magnitude maps -- unlike `gradient`
+      (computed from the current crop alone, so a busy static graphic
+      scores high purely from its own texture, indistinguishable from a
+      real tile's edges), this compares edges to the reference: a static
+      graphic has near-identical edges in both, so it scores low here
+      even though its `gradient` score is high; a real tile adds edges
+      the reference never had.
+    - `ncc`: `1 - normalized cross-correlation` against the reference --
+      NCC is invariant to a uniform brightness/gain shift (unlike `diff`,
+      a plain mean-pixel-difference), so this is a good complementary
+      signal specifically under lighting drift across a long broadcast,
+      where `diff` alone can creep upward on a still-genuinely-empty cell.
+      Inverted (`1 - correlation`) so it obeys the same "higher = more
+      occupied" convention as every other signal here: identical crops
+      correlate near 1.0, giving a score near 0. NCC is undefined when a
+      crop has essentially zero variance (a perfectly flat patch -- a
+      real photo almost always has some sensor noise, but a synthetic
+      render or a saturated/blown-out real capture can be perfectly
+      flat), and OpenCV's `TM_CCOEFF_NORMED` returns a degenerate 1.0 in
+      that case rather than raising -- silently reporting "identical" for
+      a flat reference against ANY current crop, occupied or not. Falls
+      back to a diff-based dissimilarity (still on a comparable 0-1ish
+      scale) whenever either crop's standard deviation is negligible.
     """
     current_gray = _to_gray_float(cell_crop)
     reference_gray = _to_gray_float(reference_crop)
@@ -76,9 +101,53 @@ def occupancy_scores(cell_crop: np.ndarray, reference_crop: np.ndarray) -> Dict[
 
     gx = cv2.Sobel(current_gray, cv2.CV_32F, 1, 0, ksize=3)
     gy = cv2.Sobel(current_gray, cv2.CV_32F, 0, 1, ksize=3)
-    gradient_score = float(np.sqrt(gx ** 2 + gy ** 2).std())
+    current_magnitude = np.sqrt(gx ** 2 + gy ** 2)
+    gradient_score = float(current_magnitude.std())
 
-    return {"diff": diff_score, "gradient": gradient_score}
+    ref_gx = cv2.Sobel(reference_gray, cv2.CV_32F, 1, 0, ksize=3)
+    ref_gy = cv2.Sobel(reference_gray, cv2.CV_32F, 0, 1, ksize=3)
+    reference_magnitude = np.sqrt(ref_gx ** 2 + ref_gy ** 2)
+    edge_diff_score = float(np.abs(current_magnitude - reference_magnitude).mean())
+
+    if current_gray.std() < 1e-3 or reference_gray.std() < 1e-3:
+        ncc_score = min(1.0, diff_score / 255.0)
+    else:
+        correlation = float(cv2.matchTemplate(current_gray, reference_gray, cv2.TM_CCOEFF_NORMED)[0, 0])
+        ncc_score = 1.0 - correlation
+
+    return {"diff": diff_score, "gradient": gradient_score, "edge_diff": edge_diff_score, "ncc": ncc_score}
+
+
+@dataclass(frozen=True)
+class OccupancyThresholds:
+    """Bundles every occupancy-signal threshold in one place, so adding a
+    signal doesn't mean adding another positional float parameter to
+    `is_occupied_multi`/every one of its callers. `edge_diff`/`ncc`
+    default to `None` (disabled) -- only `diff`/`gradient` have ever been
+    tuned against a real venue (see `configs/venues/wespa_word_wars.json`'s
+    notes); a venue opts into the newer signals explicitly by setting a
+    threshold for them, rather than getting them on by surprise with an
+    untuned default."""
+    diff: float = DEFAULT_DIFF_THRESHOLD
+    gradient: float = DEFAULT_GRADIENT_THRESHOLD
+    edge_diff: Optional[float] = None
+    ncc: Optional[float] = None
+
+
+def is_occupied_multi(scores: Dict[str, float], thresholds: OccupancyThresholds) -> bool:
+    """Combines every signal in `scores` (as returned by `occupancy_scores`)
+    against `thresholds`: occupied if ANY enabled signal exceeds its own
+    threshold. `diff`/`gradient` are always checked (matching
+    `is_occupied`'s existing behavior exactly when `edge_diff`/`ncc` are
+    left at their default `None`); `edge_diff`/`ncc` are checked only if
+    their threshold is set."""
+    if scores["diff"] > thresholds.diff or scores["gradient"] > thresholds.gradient:
+        return True
+    if thresholds.edge_diff is not None and scores["edge_diff"] > thresholds.edge_diff:
+        return True
+    if thresholds.ncc is not None and scores["ncc"] > thresholds.ncc:
+        return True
+    return False
 
 
 def is_occupied(

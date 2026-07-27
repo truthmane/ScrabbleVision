@@ -107,12 +107,13 @@ from autoscorer.gamelogic.pool.bag_engine import PoolInvariantViolation, compute
 from autoscorer.gamelogic.publish import PendingMove, PublishGateway
 from autoscorer.gamelogic.scoring.rules_engine import score_move
 from autoscorer.perception.board_reader import read_new_cells_voted, read_rack, rack_observations_to_tiles
-from autoscorer.perception.calibration.homography import BoardCalibration, cell_bounds
+from autoscorer.perception.calibration.homography import BoardCalibration, cell_bounds, crop_cell_inset
+from autoscorer.perception.occupancy.adaptive import AdaptiveOccupancyTracker
 from autoscorer.perception.occupancy.detector import (
     DEFAULT_DIFF_THRESHOLD,
     DEFAULT_GRADIENT_THRESHOLD,
     ReferenceBoard,
-    detect_occupancy,
+    occupancy_scores,
 )
 from autoscorer.perception.stillness.detector import (
     DEFAULT_MOTION_THRESHOLD,
@@ -252,8 +253,22 @@ class GameWatcher:
         occupancy_gradient_threshold: float = DEFAULT_GRADIENT_THRESHOLD,
         adaptive_reference: bool = True,
         lexicon: Optional[Lexicon] = None,
+        adaptive_occupancy_tracker: Optional[AdaptiveOccupancyTracker] = None,
     ) -> None:
-        """`lexicon`, if given, re-ranks decoded readings (see
+        """`adaptive_occupancy_tracker`, if given, applies per-cell
+        hysteresis and adaptive statistical thresholding (WS3 items 3-4,
+        see `perception.occupancy.adaptive`) on top of the existing
+        vote-based HARD/SOFT occupancy tiers: a cell only counts as a new
+        HARD candidate if BOTH the existing per-window vote AND the
+        tracker's own debounced, per-cell-noise-aware decision currently
+        agree it's occupied. `None` (the default) disables this entirely
+        -- behavior is then byte-for-byte identical to before this
+        existed, since only one real venue has ever been tuned and never
+        against these newer signals. Only supported with a single
+        (non-list) `reference_board`, same restriction as
+        `adaptive_reference`.
+
+        `lexicon`, if given, re-ranks decoded readings (see
         `lexicon_decoder.decode_with_lexicon`) -- it can never reject or
         substitute a reading (phonies are legal, scoring plays), only
         prefer one pool-feasible candidate over another when the words
@@ -285,6 +300,13 @@ class GameWatcher:
         else:
             self.reference_board = reference_board
             self._adaptive_reference = False
+            if adaptive_occupancy_tracker is not None:
+                raise ValueError(
+                    "adaptive_occupancy_tracker needs a single reference_board image, "
+                    "not a multi-reference list -- see the class docstring"
+                )
+        self._adaptive_tracker = adaptive_occupancy_tracker
+        self._adaptive_occupied: Dict[Coord, bool] = {}
         self.classifier = classifier
         self.publish_gateway = publish_gateway
         self.session = session
@@ -397,21 +419,40 @@ class GameWatcher:
         a lower alpha (`QUARANTINE_HEAL_ALPHA`) than ordinary drift
         refresh: a mistaken heal is a real cost, so it should take longer
         to matter than genuine lighting drift does.
+
+        Also feeds `self._adaptive_tracker` (if one was given), one
+        `diff` score per not-yet-played cell -- this is the one full-
+        board scan of the settled moment's last frame every observation
+        already does, so hysteresis/adaptive thresholding piggybacks on
+        it rather than requiring its own separate pass. A no-op for the
+        adaptive tracker specifically whenever `self.board.is_empty(coord)`
+        is False, same reasoning as the reference-refresh gate: a played
+        cell is never queried again anyway.
         """
-        if not self._adaptive_reference:
+        if not self._adaptive_reference and self._adaptive_tracker is None:
             return
-        occupancy = detect_occupancy(
-            rectified_frame, self.reference_board, self.occupancy_diff_threshold, self.occupancy_gradient_threshold,
-        )
         for row in range(BOARD_SIZE):
             for col in range(BOARD_SIZE):
                 coord = (row, col)
+                current_cell = crop_cell_inset(rectified_frame, row, col)
+                reference_cell = crop_cell_inset(self.reference_board, row, col)
+                scores = occupancy_scores(current_cell, reference_cell)
+                occupied = (
+                    scores["diff"] > self.occupancy_diff_threshold
+                    or scores["gradient"] > self.occupancy_gradient_threshold
+                )
+
+                if self._adaptive_tracker is not None and self.board.is_empty(coord):
+                    self._adaptive_occupied[coord] = self._adaptive_tracker.update(coord, scores["diff"])
+
+                if not self._adaptive_reference:
+                    continue
                 quarantined_since = self._quarantined_since.get(coord)
                 healing = (
                     quarantined_since is not None
                     and (self._observation_index - quarantined_since) >= QUARANTINE_HEAL_DELAY
                 )
-                if self.board.is_empty(coord) and (not occupancy[coord] or healing):
+                if self.board.is_empty(coord) and (not occupied or healing):
                     alpha = QUARANTINE_HEAL_ALPHA if healing else _REFERENCE_EMA_ALPHA
                     x1, y1, x2, y2 = cell_bounds(row, col)
                     old = self.reference_board[y1:y2, x1:x2].astype(np.float32)
@@ -472,6 +513,16 @@ class GameWatcher:
         # quarantine) byte-for-byte the same as before support tiers
         # existed -- a SOFT cell can add to a placement, never anchor one.
         current_cells = frozenset(cc.coord for cc in candidates if not cc.is_soft)
+        if self._adaptive_tracker is not None:
+            # Conservative AND, never an OR: this can only REMOVE a cell
+            # the vote-based HARD tier already found, when the per-cell
+            # hysteresis/adaptive-threshold tracker disagrees -- it can
+            # never invent a new candidate the vote-based system didn't
+            # already surface. `.get(coord, True)` fails open (keeps the
+            # cell) if the tracker somehow has no reading for it yet,
+            # since the tracker is only ever a tightening layer here, not
+            # the sole source of truth.
+            current_cells = frozenset(coord for coord in current_cells if self._adaptive_occupied.get(coord, True))
         # Majority occupancy support (see read_new_cells_voted) alone
         # isn't enough to trust as extension material -- also require the
         # cell's own temporal-voted top label to clear a confidence floor

@@ -3,14 +3,17 @@ import random
 
 import cv2
 import numpy as np
+import pytest
 from PIL import Image, ImageDraw
 
 from autoscorer.gamelogic.board import BOARD_SIZE, PREMIUM_SQUARES
 from autoscorer.perception.calibration.homography import CANONICAL_SIZE, cell_bounds
 from autoscorer.perception.occupancy.detector import (
     DEFAULT_GRADIENT_THRESHOLD,
+    OccupancyThresholds,
     detect_occupancy,
     is_occupied,
+    is_occupied_multi,
     occupancy_scores,
 )
 from training.synth_render.tile_renderer import SQUARE_COLORS, render_tile
@@ -90,6 +93,103 @@ def test_blank_tile_is_still_detected_as_occupied_despite_no_glyph():
         current[cell_bounds(7, 7)[1]:cell_bounds(7, 7)[3], cell_bounds(7, 7)[0]:cell_bounds(7, 7)[2]],
         reference[cell_bounds(7, 7)[1]:cell_bounds(7, 7)[3], cell_bounds(7, 7)[0]:cell_bounds(7, 7)[2]],
     )
+
+
+def test_occupancy_scores_includes_edge_diff_and_ncc():
+    reference = _blank_board_image()
+    x1, y1, x2, y2 = cell_bounds(7, 7)
+    ref_crop = reference[y1:y2, x1:x2]
+    scores = occupancy_scores(ref_crop, ref_crop)
+
+    assert scores.keys() == {"diff", "gradient", "edge_diff", "ncc"}
+    # Identical crops: no edge difference, perfect correlation -> ncc ~ 0.
+    assert scores["edge_diff"] == pytest.approx(0.0, abs=1e-4)
+    assert scores["ncc"] == pytest.approx(0.0, abs=1e-4)
+
+
+def test_edge_diff_is_high_for_a_real_tile_but_low_for_a_reference_matched_static_graphic():
+    # This is the exact case `gradient` alone can't handle (see
+    # occupancy/detector.py's module docstring and the real WESPA
+    # sponsor-logo incident): a static graphic already baked into the
+    # reference has identical edges in both crops, so edge_diff should
+    # stay low, while gradient (current-crop-only) stays high regardless.
+    reference = _blank_board_image()
+    x1, y1, x2, y2 = cell_bounds(7, 7)
+    logo = reference[y1:y2, x1:x2].copy()
+    rng = random.Random(0)
+    logo = _add_realistic_texture_noise(logo, rng)  # stands in for a busy static graphic
+    reference[y1:y2, x1:x2] = logo
+
+    current_same_logo = reference.copy()  # graphic still there, nothing changed
+    current_with_tile = reference.copy()
+    _place_tile(current_with_tile, 7, 7, "A")
+
+    scores_static = occupancy_scores(current_same_logo[y1:y2, x1:x2], reference[y1:y2, x1:x2])
+    scores_tile = occupancy_scores(current_with_tile[y1:y2, x1:x2], reference[y1:y2, x1:x2])
+
+    assert scores_static["gradient"] > 15.0, "the busy graphic itself should still score high on gradient"
+    assert scores_tile["edge_diff"] > scores_static["edge_diff"], (
+        "a genuine new tile must add more edge difference against the reference than a graphic "
+        "already present in the reference does"
+    )
+
+
+def test_is_occupied_multi_matches_is_occupied_when_new_signals_disabled():
+    reference = _blank_board_image()
+    x1, y1, x2, y2 = cell_bounds(7, 7)
+    ref_crop = reference[y1:y2, x1:x2]
+    current = reference.copy()
+    _place_tile(current, 7, 7, "A")
+    cur_crop = current[y1:y2, x1:x2]
+
+    scores = occupancy_scores(cur_crop, ref_crop)
+    thresholds = OccupancyThresholds()  # edge_diff/ncc left at their default None
+
+    assert is_occupied_multi(scores, thresholds) == is_occupied(cur_crop, ref_crop)
+
+    empty_scores = occupancy_scores(ref_crop, ref_crop)
+    assert is_occupied_multi(empty_scores, thresholds) is False
+    assert is_occupied(ref_crop, ref_crop) is False
+
+
+def test_is_occupied_multi_fires_on_edge_diff_when_enabled():
+    reference = _blank_board_image()
+    x1, y1, x2, y2 = cell_bounds(7, 7)
+    ref_crop = reference[y1:y2, x1:x2]
+    current = reference.copy()
+    _place_tile(current, 7, 7, "A")
+    cur_crop = current[y1:y2, x1:x2]
+
+    scores = occupancy_scores(cur_crop, ref_crop)
+    # Set diff/gradient thresholds absurdly high so only edge_diff can fire.
+    thresholds = OccupancyThresholds(diff=1e6, gradient=1e6, edge_diff=scores["edge_diff"] / 2)
+
+    assert is_occupied_multi(scores, thresholds) is True
+
+
+def test_is_occupied_multi_fires_on_ncc_when_enabled():
+    reference = _blank_board_image()
+    x1, y1, x2, y2 = cell_bounds(7, 7)
+    ref_crop = reference[y1:y2, x1:x2]
+    current = reference.copy()
+    _place_tile(current, 7, 7, "A")
+    cur_crop = current[y1:y2, x1:x2]
+
+    scores = occupancy_scores(cur_crop, ref_crop)
+    thresholds = OccupancyThresholds(diff=1e6, gradient=1e6, ncc=scores["ncc"] / 2)
+
+    assert is_occupied_multi(scores, thresholds) is True
+
+
+def test_is_occupied_multi_stays_false_when_every_signal_is_below_threshold():
+    reference = _blank_board_image()
+    x1, y1, x2, y2 = cell_bounds(7, 7)
+    ref_crop = reference[y1:y2, x1:x2]
+
+    scores = occupancy_scores(ref_crop, ref_crop)
+    thresholds = OccupancyThresholds(edge_diff=1.0, ncc=0.5)
+
+    assert is_occupied_multi(scores, thresholds) is False
 
 
 def test_identical_crops_are_never_occupied():
