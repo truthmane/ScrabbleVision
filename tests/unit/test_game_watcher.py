@@ -565,7 +565,16 @@ def test_a_low_confidence_soft_cell_is_never_used_to_extend_a_placement(tmp_path
     calls = iter([hard_only, hard_plus_low_confidence_soft])
     monkeypatch.setattr(gw_module, "read_new_cells_voted", lambda *a, **k: next(calls))
 
+    # Render real glyphs at the cells the mocked candidates claim to be
+    # confident about -- otherwise the frame shows blank background there
+    # while the mocked classifier claims a letter, which the blank-tile
+    # smoothness heuristic (blank_heuristic.py) correctly reads as "this
+    # confident letter looks suspiciously blank," an artifact of the mock
+    # rather than anything this test is actually about.
+    rng = random.Random(0)
     frame = _blank_board_image()
+    _place_tile(frame, 7, 6, "A", rng)
+    _place_tile(frame, 7, 7, "N", rng)
     events = [watcher.observe_board_frame(frame.copy(), player_id="p1") for _ in range(4)]
 
     final = events[-1]

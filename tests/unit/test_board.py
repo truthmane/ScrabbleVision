@@ -41,6 +41,23 @@ def test_board_state_placement_and_occupancy():
     assert board2.get((7, 7)) == Tile("A")
 
 
+def test_without_cells_reverses_with_placements():
+    board = BoardState()
+    placed = board.with_placements({(7, 7): Tile("A"), (7, 8): Tile("N")})
+    reverted = placed.without_cells([(7, 7), (7, 8)])
+
+    assert reverted.is_blank_board()
+    assert placed.get((7, 7)) == Tile("A")  # original untouched
+
+
+def test_without_cells_leaves_other_tiles_in_place():
+    board = BoardState({(7, 7): Tile("A"), (7, 8): Tile("N")})
+    reverted = board.without_cells([(7, 8)])
+
+    assert reverted.get((7, 7)) == Tile("A")
+    assert reverted.get((7, 8)) is None
+
+
 def test_cannot_place_on_occupied_cell():
     board = BoardState({(7, 7): Tile("A")})
     with pytest.raises(ValueError):

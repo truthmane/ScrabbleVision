@@ -1,10 +1,12 @@
 import random
+import threading
 
 import cv2
 import numpy as np
 import pytest
 import torch
 
+from autoscorer.api.session import GameSession
 from autoscorer.gamelogic.board import CENTER
 from autoscorer.gamelogic.models import MoveType
 from autoscorer.gamelogic.publish import PublishMode
@@ -116,6 +118,71 @@ def test_run_watcher_on_video_detects_a_play_and_alternates_players(tmp_path):
     assert event.scored_move.candidate.move_type == MoveType.PLAY
     assert event.scored_move.candidate.new_cells == (CENTER,)
     assert not event.needs_operator
+
+
+def test_run_watcher_on_video_pauses_while_a_move_is_pending(tmp_path):
+    """Regression test for a real bug found on a live run: with nothing
+    deciding a pending candidate, the loop kept observing the still-settled
+    board and re-detected + re-submitted the *same* real move as a new
+    duplicate PendingMove every subsequent stable observation (one bingo
+    piled up 9 duplicate entries in practice). In delegated (session) mode
+    the loop must instead block -- not observe any further frames -- while
+    `session.pending` is non-empty, and resume only once the operator
+    decides."""
+    checkpoint_path = _train_tiny_classifier(tmp_path)
+    reference = _blank_board_image()
+    rng = random.Random(11)
+
+    still_frame_count = 3
+    frames = [reference.copy() for _ in range(still_frame_count)]
+
+    placed = reference.copy()
+    _place_tile(placed, *CENTER, "A", rng)
+    frames.append(reference.copy())  # motion stand-in
+    frames.append(np.zeros_like(reference))
+    # Many extra settled observations of the *same* placement after the
+    # first commit -- previously each one re-triggered a duplicate commit.
+    frames += [placed.copy() for _ in range(still_frame_count + 10)]
+
+    video_path = tmp_path / "pending_pause.mkv"
+    _write_video(video_path, frames)
+
+    reference_path = tmp_path / "reference.png"
+    cv2.imwrite(str(reference_path), reference)
+    profile = VenueProfile(
+        name="pause_test_venue", corners=IDENTITY_CORNERS, still_frame_count=still_frame_count,
+        reference_board_path=str(reference_path),
+    )
+    save_venue_profile(profile, directory=tmp_path)
+
+    import autoscorer.perception.capture.run_watcher as run_watcher_module
+    original_loader = run_watcher_module.load_venue_profile
+    run_watcher_module.load_venue_profile = lambda name: original_loader(name, directory=tmp_path)
+
+    session = GameSession(mode=PublishMode.MANUAL)
+
+    def run() -> None:
+        run_watcher_on_video(
+            video_path, "pause_test_venue", checkpoint_path, "Alice", "Bob",
+            sample_fps=None, session=session,
+        )
+
+    thread = threading.Thread(target=run, daemon=True)
+    try:
+        thread.start()
+        thread.join(timeout=5.0)
+        assert thread.is_alive()  # blocked waiting on the pending decision, not finished
+
+        pending = session.list_pending()
+        assert len(pending) == 1  # not duplicated across the many repeated settled frames
+
+        session.decide(pending[0].scored_move.candidate.turn_number, "approve")
+        thread.join(timeout=15.0)
+        assert not thread.is_alive()
+    finally:
+        run_watcher_module.load_venue_profile = original_loader
+
+    assert session.list_pending() == []
 
 
 def test_run_watcher_on_video_resolves_lexicon_from_venue_profile_or_override(tmp_path):

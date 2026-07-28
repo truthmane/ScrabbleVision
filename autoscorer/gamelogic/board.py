@@ -145,6 +145,15 @@ class BoardState:
         merged.update(placements)
         return BoardState(merged)
 
+    def without_cells(self, coords: Iterable[Coord]) -> "BoardState":
+        """Return a new BoardState with the given cells cleared, leaving
+        this instance untouched. The inverse of `with_placements`, used to
+        undo a committed move."""
+        remaining = dict(self._cells)
+        for coord in coords:
+            remaining.pop(coord, None)
+        return BoardState(remaining)
+
     def occupied_cells(self) -> Iterable[Coord]:
         return self._cells.keys()
 

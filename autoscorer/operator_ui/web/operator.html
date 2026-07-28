@@ -1,97 +1,135 @@
 <title>AutoScorer Operator</title>
 <style>
-  body { font-family: -apple-system, "Segoe UI", sans-serif; max-width: 900px; margin: 24px auto; padding: 0 16px; color: #1a1a1a; background: #fff; }
+  body { font-family: -apple-system, "Segoe UI", sans-serif; max-width: 1100px; margin: 24px auto; padding: 0 16px; color: #1a1a1a; background: #fff; }
   h1 { font-size: 20px; }
   h2 { font-size: 15px; text-transform: uppercase; letter-spacing: 0.04em; color: #555; margin-top: 32px; }
   section { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin-top: 8px; }
   label { display: block; font-size: 13px; margin-top: 10px; color: #333; }
   input, select { font-size: 14px; padding: 4px 6px; }
-  .tile-row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
-  .tile-row input[type="number"] { width: 50px; }
-  .tile-row input[type="text"] { width: 40px; text-transform: uppercase; }
+  #notationLine { width: 220px; text-transform: uppercase; font-family: ui-monospace, monospace; }
   button { cursor: pointer; padding: 6px 12px; font-size: 13px; border-radius: 6px; border: 1px solid #999; background: #f5f5f5; }
   button.primary { background: #1a5c2a; color: #fff; border-color: #1a5c2a; }
   button.danger { background: #7a1a1a; color: #fff; border-color: #7a1a1a; }
-  .pending-card { border: 1px solid #e0b84d; background: #fff8e6; border-radius: 6px; padding: 10px; margin-top: 10px; }
+  .pending-card { border: 1px solid #e0b84d; background: #fff8e6; border-radius: 6px; padding: 10px; margin-top: 10px; display: flex; gap: 12px; align-items: flex-start; }
+  .pending-card img { max-width: 320px; border-radius: 4px; border: 1px solid #ccc; }
+  .pending-details { flex: 1; }
   .status { font-size: 13px; color: #555; margin-top: 6px; white-space: pre-wrap; }
   .scoreboard { display: flex; gap: 20px; font-size: 15px; }
   .scoreboard b { font-size: 20px; }
   #modeSelect { font-size: 14px; }
+  .top-row { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
+  .top-row > section, .top-row > .right-col { margin-top: 8px; }
+  #liveStateSection { flex: 0 0 auto; }
+  .right-col { flex: 1 1 320px; min-width: 280px; display: flex; flex-direction: column; gap: 8px; }
+  .right-col > section { margin-top: 0; }
+  .board-wrap { overflow-x: auto; margin-top: 10px; }
+  .board-grid { border-collapse: collapse; table-layout: fixed; }
+  .board-grid td {
+    box-sizing: border-box;
+    width: 28px; height: 28px; min-width: 28px; max-width: 28px;
+    padding: 0; margin: 0; border: 1px solid #bbb; text-align: center; vertical-align: middle;
+    font-size: 13px; font-weight: 700; font-family: ui-monospace, monospace;
+    background: #fdfaf3; color: #1a1a1a;
+  }
+  .board-grid td.p-3w { background: #d84343; color: #fff; }
+  .board-grid td.p-2w { background: #f2b8c6; }
+  .board-grid td.p-3l { background: #3a6fb0; color: #fff; }
+  .board-grid td.p-2l { background: #a9d4e8; }
+  .board-grid td.p-star { background: #f2b8c6; }
+  .board-grid td.p-3w.filled, .board-grid td.p-2w.filled,
+  .board-grid td.p-3l.filled, .board-grid td.p-2l.filled,
+  .board-grid td.p-star.filled { background: #fff3d6; }
+  .board-grid td.filled { background: #fff3d6; color: #7a1a1a; }
+  .board-grid td.blank { color: #1a5c2a; }
+  .board-grid th {
+    box-sizing: border-box; width: 28px; height: 18px; min-width: 28px; max-width: 28px;
+    font-size: 10px; color: #888; font-weight: 400; padding: 0;
+  }
+  .board-grid th:first-child, .board-grid td:first-child { width: 22px; min-width: 22px; max-width: 22px; }
+  .notation-hint { font-size: 12px; color: #777; margin-top: 4px; }
 </style>
 
 <h1>AutoScorer &mdash; Operator Console</h1>
 
-<section>
-  <h2 style="margin-top:0">Live State</h2>
-  <div class="scoreboard" id="scoreboard">loading&hellip;</div>
-  <div class="status" id="lastMoveStatus"></div>
-  <div class="status">Bag remaining: <b id="bagCount">&mdash;</b></div>
-  <label>Publish mode
-    <select id="modeSelect">
-      <option value="MANUAL">Manual (approve every move)</option>
-      <option value="AUTONOMOUS">Autonomous (publish immediately)</option>
-      <option value="AUTONOMOUS_WITH_CONFIDENCE_FALLBACK">Autonomous, low-confidence falls back to review</option>
-    </select>
-  </label>
-</section>
+<div class="top-row">
+  <section id="liveStateSection">
+    <h2 style="margin-top:0">Live State</h2>
+    <div class="scoreboard" id="scoreboard">loading&hellip;</div>
+    <div class="status" id="lastMoveStatus"></div>
+    <div class="status">Bag remaining: <b id="bagCount">&mdash;</b></div>
+    <label>Publish mode
+      <select id="modeSelect">
+        <option value="MANUAL">Manual (approve every move)</option>
+        <option value="AUTONOMOUS">Autonomous (publish immediately)</option>
+        <option value="AUTONOMOUS_WITH_CONFIDENCE_FALLBACK">Autonomous, low-confidence falls back to review</option>
+      </select>
+    </label>
+    <div style="margin-top:10px">
+      <button id="undoBtn" class="danger" type="button">Undo last move</button>
+      <div class="status" id="undoStatus"></div>
+    </div>
+    <div class="board-wrap"><table class="board-grid" id="boardGrid"></table></div>
+  </section>
 
-<h2>Submit a Move</h2>
-<section>
-  <label>Player ID <input id="playerId" type="text" value="p1"></label>
+  <div class="right-col">
+    <section id="submitSection">
+      <h2 style="margin-top:0">Submit a Move</h2>
+      <label>Player ID <input id="playerId" type="text" value="p1"></label>
+      <label>Move (standard notation)
+        <input id="notationLine" type="text" placeholder="A1 NO">
+      </label>
+      <div class="notation-hint">
+        Position + word, same as a GCG line: digit-first (e.g. <code>8A</code>) reads across, letter-first
+        (e.g. <code>A1</code>) reads down. Lowercase = a blank played as that letter. A period marks a
+        cell the word hooks through that's already occupied (not a new tile), e.g. <code>14B PInOTa.E</code>.
+      </div>
+      <div>
+        <button id="submitPlay" class="primary" type="button">Submit move</button>
+        <button id="submitExchange" type="button">Submit as exchange / pass (no new tiles)</button>
+      </div>
+      <div class="status" id="submitStatus"></div>
+    </section>
 
-  <div id="tileRows"></div>
-  <button id="addTileRow" type="button">+ Add tile</button>
-
-  <div>
-    <button id="submitPlay" class="primary" type="button">Submit as tile placement</button>
-    <button id="submitExchange" type="button">Submit as exchange / pass (no new tiles)</button>
+    <section>
+      <h2 style="margin-top:0">Pending Review</h2>
+      <div id="pendingSection">
+        <div class="status">No moves awaiting review.</div>
+      </div>
+    </section>
   </div>
-  <div class="status" id="submitStatus"></div>
-</section>
-
-<h2>Pending Review</h2>
-<section id="pendingSection">
-  <div class="status">No moves awaiting review.</div>
-</section>
+</div>
 
 <script>
-  const tileRows = document.getElementById("tileRows");
-
-  function addTileRow(row = "", col = "", letter = "", isBlank = false) {
-    const div = document.createElement("div");
-    div.className = "tile-row";
-    div.innerHTML = `
-      row <input type="number" class="row" value="${row}" min="0" max="14">
-      col <input type="number" class="col" value="${col}" min="0" max="14">
-      letter <input type="text" class="letter" maxlength="1" value="${letter}">
-      blank <input type="checkbox" class="blank" ${isBlank ? "checked" : ""}>
-      <button type="button" class="removeRow">&times;</button>
-    `;
-    div.querySelector(".removeRow").onclick = () => div.remove();
-    tileRows.appendChild(div);
-  }
-  document.getElementById("addTileRow").onclick = () => addTileRow();
-  addTileRow(7, 7, "A"); // seed one row so the form isn't empty on load
-
-  function collectTiles() {
-    return [...tileRows.querySelectorAll(".tile-row")].map((row) => ({
-      row: parseInt(row.querySelector(".row").value, 10),
-      col: parseInt(row.querySelector(".col").value, 10),
-      letter: row.querySelector(".letter").value.toUpperCase(),
-      is_blank: row.querySelector(".blank").checked,
-    })).filter((t) => t.letter);
-  }
-
-  async function submitMove(includeTiles) {
+  async function submitNotation() {
     const statusEl = document.getElementById("submitStatus");
     const body = {
       player_id: document.getElementById("playerId").value,
-      new_tiles: includeTiles ? collectTiles() : [],
+      line: document.getElementById("notationLine").value,
     };
-    const res = await fetch("/moves", {
+    const res = await fetch("/moves/notation", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      statusEl.textContent = `Error: ${data.detail}`;
+      return;
+    }
+    statusEl.textContent = data.published
+      ? `Published turn ${data.move.turn_number} (${data.move.move_type}).`
+      : `Queued turn ${data.move.turn_number} for review (${data.move.move_type}).`;
+    document.getElementById("notationLine").value = "";
+    refreshPending();
+    refreshState();
+  }
+
+  async function submitExchange() {
+    const statusEl = document.getElementById("submitStatus");
+    const res = await fetch("/moves", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ player_id: document.getElementById("playerId").value, new_tiles: [] }),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -105,8 +143,11 @@
     refreshState();
   }
 
-  document.getElementById("submitPlay").onclick = () => submitMove(true);
-  document.getElementById("submitExchange").onclick = () => submitMove(false);
+  document.getElementById("submitPlay").onclick = submitNotation;
+  document.getElementById("notationLine").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") submitNotation();
+  });
+  document.getElementById("submitExchange").onclick = submitExchange;
 
   document.getElementById("modeSelect").onchange = async (e) => {
     await fetch("/mode", {
@@ -115,6 +156,23 @@
       body: JSON.stringify({ mode: e.target.value }),
     });
   };
+
+  async function undoLastMove() {
+    const statusEl = document.getElementById("undoStatus");
+    const res = await fetch("/moves/undo", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) {
+      statusEl.textContent = `Error: ${data.detail}`;
+      return;
+    }
+    const m = data.undone;
+    const words = m.score ? m.score.words.map((w) => w.text).join(", ") : "";
+    statusEl.textContent = `Undid turn ${m.turn_number}: ${m.player_id} ${m.move_type}${words ? ` (${words})` : ""}.`;
+    refreshState();
+    refreshBoard();
+    refreshPending();
+  }
+  document.getElementById("undoBtn").onclick = undoLastMove;
 
   async function decide(turnNumber, action) {
     await fetch(`/pending/${turnNumber}/decision`, {
@@ -141,12 +199,18 @@
       card.className = "pending-card";
       const words = m.score ? m.score.words.map((w) => `${w.text} (${w.score})`).join(", ") : "";
       const total = m.score ? m.score.total : 0;
+      const imgHtml = item.has_frame
+        ? `<img src="/pending/${m.turn_number}/frame?ts=${Date.now()}" alt="source frame">`
+        : "";
       card.innerHTML = `
-        <div><b>Turn ${m.turn_number}</b> &mdash; ${m.player_id} &mdash; ${m.move_type}</div>
-        <div>${words}${m.score ? ` &mdash; total <b>${total}</b>${m.score.is_bingo ? " (BINGO +50)" : ""}` : ""}</div>
-        <div style="margin-top:6px">
-          <button class="primary approveBtn">Approve</button>
-          <button class="danger rejectBtn">Reject</button>
+        ${imgHtml}
+        <div class="pending-details">
+          <div><b>Turn ${m.turn_number}</b> &mdash; ${m.player_id} &mdash; ${m.move_type}</div>
+          <div>${words}${m.score ? ` &mdash; total <b>${total}</b>${m.score.is_bingo ? " (BINGO +50)" : ""}` : ""}</div>
+          <div style="margin-top:6px">
+            <button class="primary approveBtn">Approve</button>
+            <button class="danger rejectBtn">Reject</button>
+          </div>
         </div>
       `;
       card.querySelector(".approveBtn").onclick = () => decide(m.turn_number, "approve");
@@ -167,10 +231,61 @@
     document.getElementById("lastMoveStatus").textContent = state.last_move_type
       ? `Last: ${state.last_player} played ${state.last_move_type}${state.last_word ? ` "${state.last_word}" for ${state.last_points} pts` : ""} (turn ${state.turn_number})`
       : "No moves played yet.";
+
+    // Keep the Player ID field pointed at whoever's actually up next,
+    // instead of leaving it stuck on its static placeholder -- typing a
+    // correction under the wrong player id (easy to forget once a real
+    // game is underway) silently created a phantom third "player" in a
+    // real run. Only once exactly two real players are known, and only
+    // while the field isn't being actively edited.
+    const playerIdInput = document.getElementById("playerId");
+    if (players.length === 2 && document.activeElement !== playerIdInput) {
+      playerIdInput.value = players.find((p) => p !== state.last_player) || players[0];
+    }
   }
 
+  function buildBoardSkeleton() {
+    const table = document.getElementById("boardGrid");
+    let html = "<tr><th></th>";
+    for (let c = 0; c < 15; c++) html += `<th>${String.fromCharCode(65 + c)}</th>`;
+    html += "</tr>";
+    for (let r = 0; r < 15; r++) {
+      html += `<tr><th>${r + 1}</th>`;
+      for (let c = 0; c < 15; c++) {
+        html += `<td id="cell-${r}-${c}"></td>`;
+      }
+      html += "</tr>";
+    }
+    table.innerHTML = html;
+  }
+
+  const PREMIUM_CLASS = { "3W": "p-3w", "2W": "p-2w", "3L": "p-3l", "2L": "p-2l", "STAR": "p-star" };
+
+  async function refreshBoard() {
+    const res = await fetch("/state/board");
+    const data = await res.json();
+    for (let r = 0; r < 15; r++) {
+      for (let c = 0; c < 15; c++) {
+        const cell = data.cells[r][c];
+        const td = document.getElementById(`cell-${r}-${c}`);
+        const classes = [];
+        if (cell.premium && PREMIUM_CLASS[cell.premium]) classes.push(PREMIUM_CLASS[cell.premium]);
+        if (cell.letter) {
+          td.textContent = cell.letter;
+          classes.push(cell.is_blank ? "filled blank" : "filled");
+        } else {
+          td.textContent = "";
+        }
+        td.className = classes.join(" ");
+      }
+    }
+  }
+
+  buildBoardSkeleton();
   refreshState();
   refreshPending();
+  refreshBoard();
   setInterval(refreshPending, 2000);
   setInterval(refreshState, 2000);
+  setInterval(refreshBoard, 2000);
 </script>

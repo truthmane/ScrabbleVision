@@ -14,18 +14,35 @@ tracking already gets you PLAY-move detection, scoring, and the full
 publish-gateway safety net; it just can't classify EXCHANGE/PASS turns or
 tighten constraint decoding with real rack contents.
 
-Turn alternation is simple and deliberate: `player1_id` moves first, and
-the two alternate after every PLAY-carrying event -- whether it
-auto-published or is only pending operator review, since either way a
-real move was genuinely detected on the board (alternating only on
-auto-published moves would desync every subsequent player attribution
-after the very first move that needed a human, in any mode other than
-pure AUTONOMOUS). This is exactly as much "whose turn is it" logic as
-vision alone can ever provide (see game_watcher.py's own docstring on why
-PASS detection is out of scope) -- a real deployment with a game clock
-could drive this more precisely, but strict alternation is the correct
-assumption for any game with no passes or challenges, and this project
-has no clock signal to do better with.
+Turn alternation is strict 2-player alternation, but **in delegated
+(session) mode it is derived fresh from `session.game_state.history` on
+every frame, never advanced speculatively on a merely-detected candidate.**
+An earlier version of this function flipped as soon as ANY PLAY-carrying
+event was seen, whether auto-published or only pending operator review,
+on the reasoning that "either way a real move was genuinely detected on
+the board." That reasoning has a real gap: a pending candidate can be
+*wrong in its entirety* (a misdetection, not just an identity dispute),
+and when an operator rejects one, the flip that already happened for it
+was never undone -- every subsequent move stayed misattributed for the
+rest of the run (confirmed against a real broadcast: a rejected candidate
+left the whole back half of a game attributed to the wrong player).
+Deriving current_player from `history` instead means a rejected candidate
+-- which never touches `history` -- can't desync anything: the very next
+observation reverts to exactly the player it would have been if that
+candidate had never been detected at all. Standalone (no session) mode
+has no `history` to query and keeps the old flip-on-detection behavior,
+since it has no gateway either way for a human to reject.
+
+**In delegated mode, the loop blocks while any move sits undecided in
+`session.pending`.** Without this, the board doesn't change while an
+operator is reviewing a pending candidate, so the very next sampled
+frame sees the identical stable board and re-detects + re-submits the
+same real move as a brand-new pending turn -- confirmed on a real run,
+where a single bingo piled up as 9 duplicate pending entries because
+nothing was deciding them fast enough. Pausing frame consumption until
+`session.pending` is empty makes that structurally impossible (there's
+never a second stable observation of an already-pending board) and is
+also just what "review before the system moves on" means.
 """
 from __future__ import annotations
 
@@ -49,6 +66,16 @@ PUBLISH_MODES = {
     "manual": PublishMode.MANUAL,
     "confidence_fallback": PublishMode.AUTONOMOUS_WITH_CONFIDENCE_FALLBACK,
 }
+
+
+def _derive_current_player(session: GameSession, player1_id: str, player2_id: str) -> str:
+    """Whose turn is it, based only on genuinely COMMITTED history -- see
+    the module docstring for why this replaced flip-on-detection."""
+    history = session.game_state.history
+    if not history:
+        return player1_id
+    last_player = history[-1].candidate.player_id
+    return player2_id if last_player == player1_id else player1_id
 
 
 def format_event(event: WatcherEvent, player_id: Optional[str]) -> Optional[str]:
@@ -165,6 +192,10 @@ def run_watcher_on_video(
         for i, frame in enumerate(source):
             if max_frames is not None and i >= max_frames:
                 break
+            if session is not None:
+                while session.list_pending():
+                    time.sleep(0.5)
+                current_player = _derive_current_player(session, player1_id, player2_id)
             event = watcher.observe_board_frame(frame, player_id=current_player)
 
             if on_frame_event is not None:
@@ -185,7 +216,10 @@ def run_watcher_on_video(
             if on_event is not None:
                 on_event(event)
 
-            if event.scored_move.candidate.move_type == MoveType.PLAY:
+            if session is None and event.scored_move.candidate.move_type == MoveType.PLAY:
+                # Delegated mode re-derives current_player from session
+                # history at the top of the next iteration instead -- see
+                # _derive_current_player and the module docstring.
                 current_player, other_player = other_player, current_player
 
     return events

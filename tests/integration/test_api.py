@@ -94,6 +94,23 @@ def test_autonomous_mode_publishes_immediately(client):
     assert client.get("/state").json()["scores"]["p1"] == (1 + 1 + 1) * 2
 
 
+def test_undo_endpoint_reverses_the_last_published_move(client):
+    client.post("/mode", json={"mode": "AUTONOMOUS"})
+    client.post("/moves", json={"player_id": "p1", "new_tiles": FIRST_MOVE_TILES})
+
+    resp = client.post("/moves/undo")
+    assert resp.status_code == 200
+    assert resp.json()["undone"]["player_id"] == "p1"
+
+    state = client.get("/state").json()
+    assert state["scores"].get("p1", 0) == 0
+
+
+def test_undo_endpoint_404s_with_nothing_to_undo(client):
+    resp = client.post("/moves/undo")
+    assert resp.status_code == 404
+
+
 def test_export_gcg_endpoint_returns_the_move_history_as_gcg_text(client):
     client.post("/mode", json={"mode": "AUTONOMOUS"})
     resp = client.post("/moves", json={"player_id": "p1", "new_tiles": FIRST_MOVE_TILES})

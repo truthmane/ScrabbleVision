@@ -31,6 +31,11 @@ class PendingMove:
     board_after: BoardState
     racks_after: Dict[str, list]
     confidence: float
+    # JPEG-encoded bytes of the board frame the detection came from, if
+    # the caller had one (vision-detected moves do; a human's typed-in
+    # submission doesn't) -- lets an operator see what the model actually
+    # saw instead of reviewing a bare row/col/letter list blind.
+    source_frame_jpeg: Optional[bytes] = None
 
 
 @dataclass(frozen=True)

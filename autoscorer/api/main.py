@@ -15,13 +15,14 @@ from pathlib import Path
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from autoscorer.api.session import GameSession
+from autoscorer.gamelogic.board import BOARD_SIZE, CENTER, PREMIUM_SQUARES
 from autoscorer.gamelogic.models import MoveProcessingError, ScoredMove
-from autoscorer.gamelogic.notation import export_gcg
+from autoscorer.gamelogic.notation import export_gcg, parse_position
 from autoscorer.gamelogic.publish import PublishMode
 from autoscorer.overlay.state import build_overlay_state
 
@@ -80,6 +81,12 @@ class MoveSubmission(BaseModel):
     player_id: str
     new_tiles: List[TilePlacement] = []
     rack_after: Optional[List[RackTile]] = None
+    confidence: float = 1.0
+
+
+class NotationMoveSubmission(BaseModel):
+    player_id: str
+    line: str  # e.g. "A1 NO" or "14B PInOTa.E"
     confidence: float = 1.0
 
 
@@ -157,12 +164,87 @@ async def submit_move(submission: MoveSubmission):
     return {"published": result.published, "move": _score_move_to_dict(result.outcome)}
 
 
+@app.post("/moves/notation")
+async def submit_move_notation(submission: NotationMoveSubmission):
+    """Standard tournament notation, one line: `<position> <word>`, e.g.
+    `A1 NO` or `14B PInOTa.E` (lowercase = blank played as that letter,
+    '.' = a pre-existing cell the play hooks onto/through, not a new
+    tile -- exactly the GCG convention `notation.py` already parses for
+    replaying real game records, reused here so an operator never has to
+    learn a second format). This is the fast path `submit_move`'s
+    per-cell row/col/letter boxes were never meant to be for a human
+    typing in real time.
+    """
+    parts = submission.line.strip().split()
+    if len(parts) != 2:
+        raise HTTPException(status_code=422, detail="expected '<position> <word>', e.g. 'A1 NO' or '14B PInOTa.E'")
+    position, word = parts
+    try:
+        (row, col), direction = parse_position(position)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    new_tiles = []
+    r, c = row, col
+    for ch in word:
+        if ch != ".":
+            new_tiles.append(((r, c), ch.upper(), ch.islower()))
+        if direction == "across":
+            c += 1
+        else:
+            r += 1
+
+    result = session.submit_move(submission.player_id, new_tiles=new_tiles, confidence=submission.confidence)
+
+    if isinstance(result.outcome, MoveProcessingError):
+        raise HTTPException(status_code=422, detail=result.outcome.reason)
+
+    if result.published:
+        await overlay_connections.broadcast(build_overlay_state(session.game_state))
+
+    return {"published": result.published, "move": _score_move_to_dict(result.outcome)}
+
+
 @app.get("/pending")
 async def list_pending():
     return [
-        {"turn_number": p.scored_move.candidate.turn_number, "move": _score_move_to_dict(p.scored_move)}
+        {
+            "turn_number": p.scored_move.candidate.turn_number,
+            "move": _score_move_to_dict(p.scored_move),
+            "has_frame": p.source_frame_jpeg is not None,
+        }
         for p in session.list_pending()
     ]
+
+
+@app.get("/pending/{turn_number}/frame")
+async def pending_frame(turn_number: int):
+    pending = session.pending.get(turn_number)
+    if pending is None or pending.source_frame_jpeg is None:
+        raise HTTPException(status_code=404, detail="no source frame for this pending move")
+    return Response(content=pending.source_frame_jpeg, media_type="image/jpeg")
+
+
+@app.get("/state/board")
+async def get_board():
+    """The live 15x15 grid, for the operator page's own board rendering
+    -- separate from `/state` (which stays score/last-move summary only,
+    matching what a stream overlay graphic needs) since a full grid is a
+    different, heavier shape a broadcast overlay has no use for."""
+    board = session.game_state.board
+    cells = []
+    for row in range(BOARD_SIZE):
+        row_cells = []
+        for col in range(BOARD_SIZE):
+            tile = board.get((row, col))
+            premium = "STAR" if (row, col) == CENTER else PREMIUM_SQUARES.get((row, col))
+            row_cells.append({
+                "letter": tile.letter if tile is not None else None,
+                "is_blank": tile.is_blank if tile is not None else False,
+                "premium": premium,
+            })
+        cells.append(row_cells)
+    return {"cells": cells}
 
 
 @app.post("/pending/{turn_number}/decision")
@@ -173,6 +255,22 @@ async def decide_pending(turn_number: int, decision: OperatorDecisionRequest):
     if applied:
         await overlay_connections.broadcast(build_overlay_state(session.game_state))
     return {"applied": applied}
+
+
+@app.post("/moves/undo")
+async def undo_last_move():
+    """Reverts the single most recently committed move -- the correction
+    path for a wrong reading that already got approved (whether by an
+    operator or auto-published), rather than merely rejected while still
+    pending. Only ever undoes the tail: to fix an older mistake, undo
+    repeatedly back to it, then resubmit the moves in between (see
+    `GameState.undo_last`'s docstring for why an arbitrary earlier turn
+    isn't supported)."""
+    undone = session.undo_last_move()
+    if undone is None:
+        raise HTTPException(status_code=404, detail="no committed move to undo")
+    await overlay_connections.broadcast(build_overlay_state(session.game_state))
+    return {"undone": _score_move_to_dict(undone)}
 
 
 @app.post("/mode")

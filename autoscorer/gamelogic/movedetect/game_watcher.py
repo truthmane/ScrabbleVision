@@ -88,6 +88,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
+import cv2
 import numpy as np
 
 from autoscorer.api.session import GameSession
@@ -103,11 +104,13 @@ from autoscorer.gamelogic.movedetect.placement_search import (
 from autoscorer.gamelogic.movedetect.validator import validate_placement
 from autoscorer.gamelogic.movedetect.word_resolver import words_formed
 from autoscorer.gamelogic.models import MoveCandidate, MoveProcessingError, MoveType, ScoredMove
+from autoscorer.gamelogic.notation import format_square
 from autoscorer.gamelogic.pool.bag_engine import PoolInvariantViolation, compute_pool_state
 from autoscorer.gamelogic.publish import PendingMove, PublishGateway
 from autoscorer.gamelogic.scoring.rules_engine import score_move
 from autoscorer.perception.board_reader import read_new_cells_voted, read_rack, rack_observations_to_tiles
-from autoscorer.perception.calibration.homography import BoardCalibration, cell_bounds, crop_cell_inset
+from autoscorer.perception.calibration.homography import BoardCalibration, cell_bounds, crop_cell, crop_cell_inset
+from autoscorer.perception.classify.blank_heuristic import looks_smooth_like_a_blank
 from autoscorer.perception.occupancy.adaptive import AdaptiveOccupancyTracker
 from autoscorer.perception.occupancy.detector import (
     DEFAULT_DIFF_THRESHOLD,
@@ -121,6 +124,17 @@ from autoscorer.perception.stillness.detector import (
     StillnessTracker,
 )
 from training.classify.infer import TileClassifierModel
+
+
+def _encode_frame_jpeg(frame: Optional[np.ndarray]) -> Optional[bytes]:
+    """Best-effort JPEG encode for attaching to a pending move so an
+    operator can see what the model actually saw -- never lets an encode
+    failure break move detection itself, since the frame is a nice-to-have
+    for review, not something anything downstream depends on."""
+    if frame is None:
+        return None
+    ok, buf = cv2.imencode(".jpg", frame)
+    return buf.tobytes() if ok else None
 
 
 class WatcherState(str, Enum):
@@ -617,7 +631,7 @@ class GameWatcher:
             for candidate in ranked:
                 attempted_anything = True
                 cell_candidates = [cell_candidates_by_coord[coord] for coord in sorted(candidate.cells)]
-                outcome = self._attempt_commit(candidate, cell_candidates, player_id)
+                outcome = self._attempt_commit(candidate, cell_candidates, player_id, source_frame=window[-1])
                 if isinstance(outcome, WatcherEvent):
                     self._observations_since_commit = 0
                     return outcome
@@ -676,6 +690,7 @@ class GameWatcher:
 
     def _attempt_commit(
         self, candidate: CandidatePlacement, cell_candidates: List[CellCandidates], player_id: str,
+        source_frame: Optional[np.ndarray] = None,
     ) -> Union[WatcherEvent, Tuple[str, Tuple[Coord, ...]]]:
         """Tries to commit exactly one candidate placement. Returns a
         `WatcherEvent` if this candidate reached a real outcome (an
@@ -765,18 +780,48 @@ class GameWatcher:
         # can a contaminated superset. An operator is the correct backstop
         # for the residual neither geometry nor confidence can rule out.
         is_truncated = len(candidate.cells) < candidate.cluster_max_size
-        force_operator = is_truncated or candidate.used_soft_cells
+        force_operator_reasons: List[str] = []
+        if is_truncated or candidate.used_soft_cells:
+            force_operator_reasons.append("truncated or soft-supported placement always needs operator review")
+
+        # A confident non-blank letter whose tile face is nonetheless
+        # visually smooth is a plausible missed blank -- the classifier's
+        # own BLANK class is not the only signal for this (see
+        # blank_heuristic.py's docstring: measured 2/2 held-out real blank
+        # tiles the deployed checkpoint misread as a confident letter).
+        # This never overrides the decoded letter or calls the cell blank
+        # itself; it only routes an otherwise-confident reading to an
+        # operator the same way a genuine blank already does.
+        if source_frame is not None:
+            rectified = self.calibration.rectify(source_frame)
+            smooth_cells = [
+                coord for coord in new_cells
+                if looks_smooth_like_a_blank(crop_cell(rectified, coord[0], coord[1]))
+            ]
+            if smooth_cells:
+                squares = ", ".join(sorted(format_square(c) for c in smooth_cells))
+                force_operator_reasons.append(
+                    f"tile at {squares} reads as a confident letter but looks unusually smooth "
+                    "-- possible missed blank"
+                )
+
+        force_operator = bool(force_operator_reasons)
+        force_operator_reason = "; ".join(force_operator_reasons)
         # `publish_confidence` only ever matters to
         # AUTONOMOUS_WITH_CONFIDENCE_FALLBACK -- plain AUTONOMOUS ignores
         # confidence entirely by design (`PublishGateway.should_auto_publish`
         # returns True unconditionally), so forcing operator review for a
-        # truncated/soft-extended candidate cannot rely on confidence alone
-        # in standalone mode; it bypasses the gateway outright, below, the
-        # same way the blank check above already does.
+        # truncated/soft-extended/possible-missed-blank candidate cannot
+        # rely on confidence alone in standalone mode; it bypasses the
+        # gateway outright, below, the same way the blank check above
+        # already does.
         publish_confidence = 0.0 if force_operator else move_confidence
 
         if self.session is not None:
-            return self._submit_play_via_session(decoded, player_id, move_confidence, publish_confidence, force_operator)
+            return self._submit_play_via_session(
+                decoded, player_id, move_confidence, publish_confidence,
+                force_operator, force_operator_reason, source_frame,
+            )
 
         words = words_formed(board_after, new_cells)
         move_score = score_move(board_after, words, new_cells)
@@ -791,11 +836,9 @@ class GameWatcher:
         if force_operator or not self.publish_gateway.should_auto_publish(publish_confidence):
             pending = PendingMove(
                 scored_move=scored_move, board_after=board_after, racks_after={}, confidence=move_confidence,
+                source_frame_jpeg=_encode_frame_jpeg(source_frame),
             )
-            reason = (
-                "truncated or soft-supported placement always needs operator review" if force_operator
-                else "confidence below gateway threshold"
-            )
+            reason = force_operator_reason if force_operator else "confidence below gateway threshold"
             return WatcherEvent(
                 state=self.state, scored_move=scored_move, confidence=move_confidence,
                 needs_operator=True, pending=pending, reason=reason,
@@ -813,6 +856,8 @@ class GameWatcher:
         move_confidence: float,
         publish_confidence: Optional[float] = None,
         force_operator: bool = False,
+        force_operator_reason: str = "",
+        source_frame: Optional[np.ndarray] = None,
     ) -> WatcherEvent:
         """The delegated-mode path: hands the decoded reading to
         `GameSession.submit_move` -- the same call a human operator's
@@ -833,6 +878,7 @@ class GameWatcher:
         result = self.session.submit_move(
             player_id, new_tiles=new_tiles,
             confidence=publish_confidence if publish_confidence is not None else move_confidence,
+            source_frame_jpeg=_encode_frame_jpeg(source_frame),
         )
 
         if isinstance(result.outcome, MoveProcessingError):
@@ -846,7 +892,7 @@ class GameWatcher:
         if result.published:
             reason = None
         elif force_operator:
-            reason = "truncated or soft-supported placement always needs operator review"
+            reason = force_operator_reason
         else:
             reason = "confidence below gateway threshold"
         return WatcherEvent(
