@@ -1,8 +1,10 @@
 # Real tile crop dataset
 
-2,174 real, individually-verified Scrabble tile crops (60x60 canonical, one per occupied board
-cell), organized as an `ImageFolder`-compatible directory (`<LETTER>/*.png`, plus `BLANK/` for
-blank tiles) for `training/classify/train.py`.
+3,363 real, individually-verified Scrabble tile crops, organized as an `ImageFolder`-compatible
+directory (`<LETTER>/*.png`, plus `BLANK/` for blank tiles) for `training/classify/train.py`.
+2,174 are board-crop tiles (60x60 canonical, one per occupied board cell); the remaining 1,189
+(prefix `wespa_rack_*`) are rack-crop tiles harvested from broadcast rack overlays — see "Rack
+tile crops" below, they follow a different provenance/verification path than the board table.
 
 **Committed deliberately, unlike full broadcast frames/video** — these are small, individually
 cropped game-piece images (a single tile face each), not the copyrighted broadcast footage
@@ -48,6 +50,53 @@ All calibrated via `training/collect/click_calibrate.py` (see that module's docs
 directly on the source photo, RANSAC-fit a homography from the clicks, crop every occupied cell,
 and every single crop was visually spot-checked (full per-tile montage, not just one-per-class)
 against its label before being added here.
+
+## Rack tile crops (`wespa_rack_*` prefix)
+
+1,189 tiles cropped from the WESPA Word Wars broadcast's on-screen rack overlay, which displays
+both players' current rack tiles continuously at the bottom of the frame — a different source
+path than the board-crop provenance table above:
+
+- `wespa_rack_g3t0_<i>.png` (13 tiles): the original pilot frame (WESPA Game 3, `t=0`), read and
+  labeled manually pixel-by-pixel off a clear, legible broadcast graphic.
+- `wespa_rack_bcast_f<seconds>_<L|R><idx>.png` (1,176 tiles): harvested at scale from the full
+  6h52m WESPA "games 1-7" broadcast, sampled at 150s and 50s intervals (`<seconds>` = timestamp
+  in the source video), `L`/`R` = which player's rack, `<idx>` = tile position within that rack.
+
+**Harvest method** (`scripts` not committed — this was a one-off scratchpad pipeline, not a
+reusable tool, since it depends on this specific broadcast's fixed rack-overlay layout):
+1. Extract frames via `ffmpeg -ss <t> -i <video> -frames:v 1`.
+2. Locate each rack's letter glyphs via `pytesseract.image_to_boxes` (psm 7, whole rack as one
+   "word") on the fixed on-screen rack region, then crop each tile using the median pitch between
+   consecutive glyph centers — tiles sit flush against each other with no border gap, so a plain
+   contour/blob split does not separate them, but the *printed letters* have enough margin between
+   them for Tesseract's own character segmentation to work.
+3. Independently re-OCR each cropped tile alone (psm 10, single-character) and keep it only if
+   this second read agrees with the first pass's letter at that position — a cheap two-pass
+   cross-check, not a confidence threshold (Tesseract's per-char confidence output was unusable
+   here, always near 0 in psm 10 regardless of correctness).
+4. Reject any crop whose mean grayscale brightness is below 100 — this alone was enough to catch
+   every false-positive glyph the OCR pass found on intermission/title-card frames (a cyan
+   "letsplayscrabble.com" watermark, white commentary text, a scrolling banner), which are much
+   darker overall than a real cream tile + wood rack holder. Verified: a clean brightness gap
+   (highest rejected ~78, lowest kept ~133) with zero ambiguous cases in this dataset.
+5. Blank tiles detected separately (near-zero dark-pixel fraction in the letter region) rather
+   than relying on OCR, since a blank has no glyph for either OCR pass to read at all.
+6. Manually spot-checked via random-sample montages (30 tiles at a time) against the source
+   crops before merging — zero mislabels found in the post-filter set across two independent
+   30-tile checks.
+
+No exact-duplicate crops exist in this batch (checked via content hash) — even at 150s spacing,
+JPEG/exposure noise alone made every crop byte-distinct, and the two expert players in this
+broadcast change their racks often enough that 150-450s sampling rarely caught the same rack twice
+anyway.
+
+**Not yet used in a retrain.** These tiles exist to fill the real rack-crop accuracy gap measured
+earlier (board 93.4% vs. rack ~59.5% on a small held-out set) — see `docs/classifier-accuracy-plan.md`
+and prior fine-tune attempts using *synthetic* rack augmentation of board crops, all of which
+failed to move real rack accuracy. A future retrain against this real data should hold out a fresh
+split of these WESPA tiles (not just the pre-existing small held-out set, which may not be
+venue-disjoint from this broadcast) before trusting any accuracy number.
 
 ## Regenerating / extending
 
