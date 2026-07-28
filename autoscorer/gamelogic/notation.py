@@ -34,7 +34,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 
-from autoscorer.gamelogic.board import BOARD_SIZE, Coord, Tile
+from autoscorer.gamelogic.board import BOARD_SIZE, Coord, Tile, format_square  # noqa: F401 -- format_square re-exported here for existing callers
 from autoscorer.gamelogic.models import MoveType
 
 if TYPE_CHECKING:
@@ -244,18 +244,6 @@ def rack_to_gcg(rack: Sequence[Tile]) -> str:
     "PIOTE??" for a rack holding two blanks); every other tile shows its
     (always uppercase) letter."""
     return "".join("?" if tile.letter is None else tile.letter for tile in rack)
-
-
-def format_square(coord: Coord) -> str:
-    """A single 0-indexed (row, col) as standard tournament notation, e.g.
-    (7, 7) -> "H8" (the center square). Column-letter first, then
-    row-number -- this is a single square, not a play position/direction
-    (see `format_position` for that), so there's no across/down ambiguity
-    to resolve. Used everywhere a coordinate is shown to a human (logs,
-    stall reports, eval metrics, operator-facing reasons) instead of the
-    internal 0-indexed tuple, which is easy to misread off by one."""
-    row, col = coord
-    return f"{chr(ord('A') + col)}{row + 1}"
 
 
 def format_position(word_cells: Sequence[Coord]) -> str:

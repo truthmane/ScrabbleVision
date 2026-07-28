@@ -16,6 +16,16 @@ Coord = Tuple[int, int]
 BLANK = "_"  # sentinel used in distributions/pool bookkeeping for a blank tile
 
 
+def format_square(coord: Coord) -> str:
+    """A single 0-indexed (row, col) as standard tournament notation, e.g.
+    (7, 7) -> "H8" (the center square). Column-letter first, then
+    row-number. Used everywhere a coordinate is shown to a human (error
+    messages, logs, operator-facing reasons) instead of the internal
+    0-indexed tuple, which is easy to misread off by one."""
+    row, col = coord
+    return f"{chr(ord('A') + col)}{row + 1}"
+
+
 @dataclass(frozen=True)
 class Tile:
     """A single physical tile.
@@ -138,9 +148,12 @@ class BoardState:
         for coord, tile in placements.items():
             self._check_bounds(coord)
             if not self.is_empty(coord):
-                raise ValueError(f"Cell {coord} is already occupied; cannot place a tile there")
+                raise ValueError(f"Cell {format_square(coord)} is already occupied; cannot place a tile there")
             if tile.letter is None:
-                raise ValueError(f"Tile at {coord} is a blank with no letter assigned; a blank must be played as a specific letter")
+                raise ValueError(
+                    f"Tile at {format_square(coord)} is a blank with no letter assigned; "
+                    "a blank must be played as a specific letter"
+                )
         merged = dict(self._cells)
         merged.update(placements)
         return BoardState(merged)

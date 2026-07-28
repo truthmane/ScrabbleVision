@@ -599,6 +599,38 @@ class GameWatcher:
             if cluster and cluster <= considerable_confirmed
         ]
 
+        # A cluster that's only this small BECAUSE a quarantined neighbor
+        # was cut out of it is not the same situation as a cluster that's
+        # genuinely just this size -- there was real evidence a tile sits
+        # right next to it. Found on the real WESPA broadcast: a tile the
+        # classifier kept confidently misreading as BLANK got quarantined
+        # after 3 failed observations, and the two neighboring cells it
+        # had been gluing together then committed on their own -- cleanly,
+        # with no truncation flag, since `cluster_max_size` only ever saw
+        # the already-shrunk cluster -- producing a confidently wrong,
+        # auto-published 2-cell word where the real move was 3 cells.
+        #
+        # `quarantined_now` (not `current_cells` alone) is deliberately
+        # unioned in below: a quarantined cell's own occupancy signal
+        # decays out of `current_cells` within a couple of observations
+        # (the adaptive reference starts healing it toward "background"
+        # almost immediately, see `QUARANTINE_HEAL_DELAY`) -- confirmed on
+        # the real broadcast, where the quarantined cell had already
+        # dropped out of `current_cells` entirely by the time its
+        # neighbors' cluster next became ready, which silently defeated an
+        # earlier version of this check that only looked at
+        # `current_cells`. `self._quarantined` itself persists for the
+        # cell's full `QUARANTINE_TTL_OBSERVATIONS` regardless of whether
+        # the raw signal has since healed away, so re-including it here
+        # keeps this check valid for that whole window, not just the
+        # couple of observations before healing erases the live evidence.
+        quarantined_now = frozenset(self._quarantined)
+        unquarantined_clusters = _cluster_cells(current_cells | quarantined_now, self.board)
+        clusters_touching_quarantine = frozenset(
+            cluster for cluster in ready_clusters
+            if any(cluster < full and full & quarantined_now for full in unquarantined_clusters)
+        )
+
         self.state = WatcherState.DIFF_COMPUTED
         cell_candidates_by_coord = {cc.coord: cc for cc in candidates}
         failed_cells_this_observation: set = set()
@@ -628,10 +660,14 @@ class GameWatcher:
                 enumerate_candidate_placements(cluster, self.board, self._soft_cells),
                 key=lambda c: (-len(c.cells), sorted(c.cells)),
             )
+            shrunk_by_quarantine = cluster in clusters_touching_quarantine
             for candidate in ranked:
                 attempted_anything = True
                 cell_candidates = [cell_candidates_by_coord[coord] for coord in sorted(candidate.cells)]
-                outcome = self._attempt_commit(candidate, cell_candidates, player_id, source_frame=window[-1])
+                outcome = self._attempt_commit(
+                    candidate, cell_candidates, player_id, source_frame=window[-1],
+                    shrunk_by_quarantine=shrunk_by_quarantine,
+                )
                 if isinstance(outcome, WatcherEvent):
                     self._observations_since_commit = 0
                     return outcome
@@ -690,7 +726,7 @@ class GameWatcher:
 
     def _attempt_commit(
         self, candidate: CandidatePlacement, cell_candidates: List[CellCandidates], player_id: str,
-        source_frame: Optional[np.ndarray] = None,
+        source_frame: Optional[np.ndarray] = None, shrunk_by_quarantine: bool = False,
     ) -> Union[WatcherEvent, Tuple[str, Tuple[Coord, ...]]]:
         """Tries to commit exactly one candidate placement. Returns a
         `WatcherEvent` if this candidate reached a real outcome (an
@@ -783,6 +819,22 @@ class GameWatcher:
         force_operator_reasons: List[str] = []
         if is_truncated or candidate.used_soft_cells:
             force_operator_reasons.append("truncated or soft-supported placement always needs operator review")
+
+        # `cluster_max_size` only ever reflects the cluster AFTER quarantine
+        # has already cut cells out of it, so a genuinely-truncated
+        # placement can look clean (`is_truncated=False`) once its missing
+        # neighbor has been quarantined away -- found on the real WESPA
+        # broadcast: a tile the classifier kept confidently misreading as
+        # BLANK got quarantined after 3 failures, and the two cells it had
+        # been gluing together then committed alone, with no truncation
+        # flag, silently dropping a real tile from the word. `shrunk_by_quarantine`
+        # (computed by the caller against the FULL current reading, before
+        # quarantine exclusion) catches exactly this case.
+        if shrunk_by_quarantine:
+            force_operator_reasons.append(
+                "an adjacent tile was excluded from this placement after repeated failed reads "
+                "-- this word may be incomplete"
+            )
 
         # A confident non-blank letter whose tile face is nonetheless
         # visually smooth is a plausible missed blank -- the classifier's

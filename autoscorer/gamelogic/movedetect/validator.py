@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
-from autoscorer.gamelogic.board import CENTER, BoardState, Coord
+from autoscorer.gamelogic.board import CENTER, BoardState, Coord, format_square
 from autoscorer.gamelogic.movedetect.word_resolver import run_through
 
 
@@ -43,7 +43,7 @@ def validate_placement(
 
     for coord in new_cells:
         if not board_before.is_empty(coord):
-            return ValidationResult.failure(f"cell {coord} was already occupied before this move")
+            return ValidationResult.failure(f"cell {format_square(coord)} was already occupied before this move")
 
     is_first_move = board_before.is_blank_board()
 

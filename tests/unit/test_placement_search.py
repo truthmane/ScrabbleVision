@@ -20,6 +20,32 @@ def test_a_simple_collinear_row_is_one_candidate():
     assert ((7, 6), (7, 7), (7, 8)) in _cell_sets(candidates)
 
 
+def test_a_cell_with_no_column_mates_does_not_also_yield_a_spurious_singleton():
+    """Regression test for a real bug found running the full WESPA
+    broadcast: a 3-cell row cluster used to ALSO enumerate each of its own
+    cells as a standalone 1-cell "column" candidate, since none of them
+    happens to share a column with a cluster-mate. These aren't real
+    alternative readings -- they're a search artifact that let a wrong
+    one-letter word slip through as a "truncated" fallback the instant the
+    real 3-cell candidate failed for any reason (there, one cell being
+    misread as BLANK), well before quarantine ever had a chance to
+    legitimately shrink the cluster down to what was actually missing.
+    """
+    board = BoardState()
+    confirmed = frozenset({(7, 6), (7, 7), (7, 8)})
+    candidates = enumerate_candidate_placements(confirmed, board)
+
+    cell_sets = _cell_sets(candidates)
+    assert cell_sets == {((7, 6), (7, 7), (7, 8))}, f"expected only the full 3-cell row run, got {cell_sets}"
+
+
+def test_a_genuinely_standalone_single_cell_still_yields_its_own_candidate():
+    board = BoardState()
+    confirmed = frozenset({(7, 7)})
+    candidates = enumerate_candidate_placements(confirmed, board)
+    assert _cell_sets(candidates) == {((7, 7),)}
+
+
 def test_non_collinear_blob_splits_into_legal_collinear_candidates():
     """The exact real blob from the log that jammed the pipeline for 163
     consecutive observations: (3,2) is an existing tile the play bridges

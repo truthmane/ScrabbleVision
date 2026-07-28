@@ -178,6 +178,25 @@ def enumerate_candidate_placements(
                 seen_sets.add(run)
                 unique_runs.append(run)
 
+        # A 1-cell run along one axis is a spurious duplicate, not a real
+        # alternative reading, when that same cell already belongs to a
+        # genuinely larger run along the other axis -- it doesn't mean
+        # "this cell could really be its own standalone play," it's just
+        # what's left over from an axis the cell happens not to share
+        # with any cluster-mate. Real full-game bug this caused: a 3-cell
+        # row cluster with one persistently misread cell (a genuine tile
+        # the classifier kept reading as BLANK) fell through -- the same
+        # observation the 3-cell candidate failed -- straight to a
+        # single-cell "column" candidate for one of the two perfectly
+        # good cells, silently committing a wrong one-letter word instead
+        # of ever retrying the real 3-cell candidate or waiting for
+        # quarantine to legitimately shrink the cluster.
+        cells_in_larger_runs = {coord for run in unique_runs if len(run) > 1 for coord in run}
+        unique_runs = [
+            run for run in unique_runs
+            if len(run) > 1 or not (run & cells_in_larger_runs)
+        ]
+
         cluster_max_size = max((len(run) for run in unique_runs), default=0)
         candidates.extend(
             CandidatePlacement(cells=run, cluster_max_size=cluster_max_size) for run in unique_runs

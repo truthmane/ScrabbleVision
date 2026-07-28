@@ -467,6 +467,47 @@ def test_a_persistently_failing_cluster_never_blocks_an_independent_one(tmp_path
     assert (5, 7) in watcher._quarantined, "the persistently-failing blank cell was never quarantined"
 
 
+def test_a_cluster_shrunk_by_quarantine_is_forced_to_operator_review(tmp_path):
+    """Regression test for a real bug found running the full WESPA
+    broadcast: once a persistently-misread neighbor gets quarantined out
+    of a cluster, the cells left behind used to look like a clean,
+    non-truncated placement (`cluster_max_size` only ever reflects the
+    cluster AFTER quarantine already shrank it), so they auto-published a
+    confidently wrong, incomplete word. Real case: a genuine tile the
+    classifier kept confidently misreading as BLANK sat next to two
+    perfectly good tiles that formed a valid word (OJO, in the real game)
+    on their own once the blank-flagged one was quarantined away -- that
+    must never auto-publish, since a real tile is missing from it.
+    """
+    classifier = _train_tiny_classifier(tmp_path)
+    watcher = _make_watcher(classifier, mode=PublishMode.AUTONOMOUS)
+    rng = random.Random(11)
+
+    watcher._board = BoardState({(5, 5): Tile("A")})
+
+    frame = _blank_board_image()
+    _place_tile(frame, 5, 6, "N", rng)
+    _place_tile(frame, 5, 7, "T", rng)
+    _place_tile(frame, 5, 8, None, rng)  # a real blank, adjacent only to (5, 7)
+
+    final = None
+    for _ in range(40):
+        event = watcher.observe_board_frame(frame.copy(), player_id="p1")
+        if event.scored_move is not None:
+            final = event
+            break
+
+    assert final is not None, "the cluster shrunk by quarantine never committed"
+    assert set(final.scored_move.candidate.new_cells) == {(5, 6), (5, 7)}, (
+        "should commit the two good cells once the blank is quarantined away"
+    )
+    assert final.needs_operator is True, "a cluster shrunk by quarantine must still force operator review"
+    assert "excluded from this placement" in final.reason
+    assert watcher.board.get((5, 6)) is None and watcher.board.get((5, 7)) is None, (
+        "a forced-operator candidate must not apply to the board -- only the pre-existing anchor tile should be there"
+    )
+
+
 def test_truncated_candidate_never_auto_publishes_even_at_high_confidence(tmp_path):
     """A candidate smaller than the largest one its cluster could have
     produced is a truncation -- a real, measured risk (see

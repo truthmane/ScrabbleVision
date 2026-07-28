@@ -1,8 +1,8 @@
 # Real tile crop dataset
 
-5,880 real, individually-verified Scrabble tile crops, organized as an `ImageFolder`-compatible
+5,975 real, individually-verified Scrabble tile crops, organized as an `ImageFolder`-compatible
 directory (`<LETTER>/*.png`, plus `BLANK/` for blank tiles) for `training/classify/train.py`.
-2,174 are board-crop tiles (60x60 canonical, one per occupied board cell); the remaining 3,706 are
+2,269 are board-crop tiles (60x60 canonical, one per occupied board cell); the remaining 3,706 are
 rack-crop tiles (prefixes `wespa_rack_*`, `july4_rack_bcast_*`, `naspa_day3_rack_bcast_*`)
 harvested from broadcast footage of real physical racks — see "Rack tile crops" below, they follow
 a different provenance/verification path than the board table. (July4 and Day3 were each harvested
@@ -47,6 +47,11 @@ Every file is named `<LABEL>_<venue_prefix>_<row>_<col>.png` — the label is th
 | `batch2_g43439` | Joshua vs Joey Mallick, 32nd National Championship Finals 2023-07-19 | 97 | GCG (`g43439`) |
 | `batch2_g43003` | Mack Meller vs Josh Sokol, 11th Word Cup 2023-06-30 | 99 | GCG (`g43003`) |
 | `batch2_g39295` | Will Anderson vs Joshua Sokol, 31st National Championship 2022-07-23 | 98 | GCG (`g39295`) |
+| `wespa_game1_final` | WESPA Word Wars Game 1 (Nigel Richards vs Adam Logan), the same broadcast this project's board pipeline has been live-tested against all session | 95 | `tests/fixtures/wespa_word_wars_game1.gcg`, reconstructed via `board_from_gcg_final` from the fully-settled final-board frame (t=2215s of the downloaded HD clip) |
+
+**`wespa_game1_final` was the first WESPA *board* tile data of any kind** -- `training/data/real_tiles/` already had 1,189 WESPA *rack* crops (different camera/framing entirely), but zero board crops, meaning every board-tile prediction against this broadcast all session had been out-of-distribution generalization. Motivated by a real, reproducible board-detection failure: the classifier confidently misread a genuine "O" tile as BLANK (0.55-0.74 confidence) and a genuine "J" tile as I/N/L (all low-confidence), both real (non-blank) tiles from the real GCG move `>NigelRichards: ROJAORE E8 ..OJO +30` -- pixel-zoomed crops confirmed both are perfectly legible to a human, ruling out a crop/calibration bug. Gentle incremental fine-tune (2 epochs, lr=1e-4, from the round-6 checkpoint, same recipe as every prior round) on just these 95 tiles, recalibrated (`T≈1.118`) against the Causeway held-out set: **zero regression** (97.5%, 118/121, identical 3 mistakes before and after) -- real evidence this round generalizes rather than overfitting to WESPA specifically. Promoted with explicit user sign-off.
+
+Only a **modest, honestly-mixed** result on the motivating failure itself, not a full fix: the O tile's confidence improved (0.79->0.91), but the O misread turned out to be more about residual motion blur right when the tile was freshly placed (the same crop, resampled later once fully settled, already read correctly even on the pre-fine-tune checkpoint) than a lasting property of the tile's appearance. The J tile is still misread post-fine-tune (I->L, still wrong, still low-confidence) -- this game had exactly **one** J placement, so a single example from one game's harvest is nowhere near enough signal to move a whole letter class; genuinely fixing rare letters here needs data from more WESPA games (the source broadcast is titled "Games 1-7"), not more frames of this same one.
 
 All calibrated via `training/collect/click_calibrate.py` (see that module's docstring and
 `training/collect/README.md` section 3b) — a human clicks a handful of named reference cells
