@@ -1,8 +1,8 @@
 # Real tile crop dataset
 
-5,975 real, individually-verified Scrabble tile crops, organized as an `ImageFolder`-compatible
+6,065 real, individually-verified Scrabble tile crops, organized as an `ImageFolder`-compatible
 directory (`<LETTER>/*.png`, plus `BLANK/` for blank tiles) for `training/classify/train.py`.
-2,269 are board-crop tiles (60x60 canonical, one per occupied board cell); the remaining 3,706 are
+2,359 are board-crop tiles (60x60 canonical, one per occupied board cell); the remaining 3,706 are
 rack-crop tiles (prefixes `wespa_rack_*`, `july4_rack_bcast_*`, `naspa_day3_rack_bcast_*`)
 harvested from broadcast footage of real physical racks — see "Rack tile crops" below, they follow
 a different provenance/verification path than the board table. (July4 and Day3 were each harvested
@@ -48,6 +48,11 @@ Every file is named `<LABEL>_<venue_prefix>_<row>_<col>.png` — the label is th
 | `batch2_g43003` | Mack Meller vs Josh Sokol, 11th Word Cup 2023-06-30 | 99 | GCG (`g43003`) |
 | `batch2_g39295` | Will Anderson vs Joshua Sokol, 31st National Championship 2022-07-23 | 98 | GCG (`g39295`) |
 | `wespa_game1_final` | WESPA Word Wars Game 1 (Nigel Richards vs Adam Logan), the same broadcast this project's board pipeline has been live-tested against all session | 95 | `tests/fixtures/wespa_word_wars_game1.gcg`, reconstructed via `board_from_gcg_final` from the fully-settled final-board frame (t=2215s of the downloaded HD clip) |
+| `wespa_game2_final` | WESPA Word Wars Game 2 (same event, Nigel Richards vs Adam Logan), a separate game from the same source broadcast (`youtube.com/watch?v=YojCdbthGQY`, located via its storyboard sprite sheets since the video has no chapter markers) | 90 | `tests/fixtures/wespa_word_wars_game2.gcg`, `board_from_gcg_final` |
+
+**`wespa_game2_final`'s harvest caught its own real mistake before anything got promoted**: the initial 96-cell harvest's spot-check montage showed 2 classes (Q, R) rendering bare premium-square graphics instead of tile glyphs -- traced to the download window (`--download-sections`, sized by extrapolating from Game 1's ~37-minute length) ending about 10-20 seconds before the game's actual final two plays (`CQOSUNO C7 SUQ +28`, `IRZ 1H RIZ +47`) were placed on the physical board, even though the GCG (and the broadcast's live score graphic) already reflected them. All 6 tiles from those two plays (S, U, Q, R, I, Z) were still "reconstructed" by `board_from_gcg_final` since it only reads the GCG text, not the video -- caught only because every single one of the resulting crops was individually opened and visually checked against its label, not because any automated signal flagged it. All 6 were dropped before promoting; the remaining 90 were re-spot-checked clean.
+
+Gentle incremental fine-tune (2 epochs, lr=1e-4, from the `wespa_game1_final` round's checkpoint) on just these 90 tiles, recalibrated (`T≈1.125`): again **zero regression** on the Causeway held-out set (97.5%, 118/121, unchanged) -- the second consecutive round confirming this generalizes rather than overfitting per-venue. Promoted with explicit user sign-off. Rare-letter coverage is still thin after two rounds (J: 2 total across both games, K: 2, Q: 0 clean examples from either WESPA game so far, Z: 0) -- genuinely fixing classification on those letters for this venue needs data from more of the broadcast's games (titled "Games 1-7"), not more frames of these same two.
 
 **`wespa_game1_final` was the first WESPA *board* tile data of any kind** -- `training/data/real_tiles/` already had 1,189 WESPA *rack* crops (different camera/framing entirely), but zero board crops, meaning every board-tile prediction against this broadcast all session had been out-of-distribution generalization. Motivated by a real, reproducible board-detection failure: the classifier confidently misread a genuine "O" tile as BLANK (0.55-0.74 confidence) and a genuine "J" tile as I/N/L (all low-confidence), both real (non-blank) tiles from the real GCG move `>NigelRichards: ROJAORE E8 ..OJO +30` -- pixel-zoomed crops confirmed both are perfectly legible to a human, ruling out a crop/calibration bug. Gentle incremental fine-tune (2 epochs, lr=1e-4, from the round-6 checkpoint, same recipe as every prior round) on just these 95 tiles, recalibrated (`T≈1.118`) against the Causeway held-out set: **zero regression** (97.5%, 118/121, identical 3 mistakes before and after) -- real evidence this round generalizes rather than overfitting to WESPA specifically. Promoted with explicit user sign-off.
 
