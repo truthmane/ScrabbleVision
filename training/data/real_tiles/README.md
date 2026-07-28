@@ -1,11 +1,13 @@
 # Real tile crop dataset
 
-4,633 real, individually-verified Scrabble tile crops, organized as an `ImageFolder`-compatible
+5,880 real, individually-verified Scrabble tile crops, organized as an `ImageFolder`-compatible
 directory (`<LETTER>/*.png`, plus `BLANK/` for blank tiles) for `training/classify/train.py`.
-2,174 are board-crop tiles (60x60 canonical, one per occupied board cell); the remaining 2,459 are
+2,174 are board-crop tiles (60x60 canonical, one per occupied board cell); the remaining 3,706 are
 rack-crop tiles (prefixes `wespa_rack_*`, `july4_rack_bcast_*`, `naspa_day3_rack_bcast_*`)
 harvested from broadcast footage of real physical racks — see "Rack tile crops" below, they follow
-a different provenance/verification path than the board table.
+a different provenance/verification path than the board table. (July4 and Day3 were each harvested
+in two passes at interleaved timestamps — 100s then a second 100s pass offset by 50s — for roughly
+double the density of the first pass; see the provenance table below for the exact per-venue split.)
 
 **Committed deliberately, unlike full broadcast frames/video** — these are small, individually
 cropped game-piece images (a single tile face each), not the copyrighted broadcast footage
@@ -67,8 +69,8 @@ one of them.
 |---|---|---|---|---|
 | `wespa_rack_g3t0_<i>` | WESPA Word Wars (Albany NY), Game 3 pilot frame | white tile, red/maroon text | 13 | manually read pixel-by-pixel |
 | `wespa_rack_bcast_f<s>_<L\|R><i>` | WESPA Word Wars, full "games 1-7" broadcast | white tile, red/maroon text | 1,176 | `youtube.com/watch?v=YojCdbthGQY` |
-| `july4_rack_bcast_f<s>_<L\|R><i>` | "4th of July / Bob Linn Superstars" tournament, Day 1 | white tile, red/maroon text | 820 | `youtube.com/live/ROL1VARMt9U` |
-| `naspa_day3_rack_bcast_f<s>_<L\|R><i>` | 2026 Scrabble Players Championship, NWL Div. Day 3 (NASPA's own channel) | **black tile, white text** | 450 | `youtube.com/watch?v=ncHZby73h4I` |
+| `july4_rack_bcast_f<s>_<L\|R><i>` | "4th of July / Bob Linn Superstars" tournament, Day 1 | white tile, red/maroon text | 1,554 | `youtube.com/live/ROL1VARMt9U` |
+| `naspa_day3_rack_bcast_f<s>_<L\|R><i>` | 2026 Scrabble Players Championship, NWL Div. Day 3 (NASPA's own channel) | **black tile, white text** | 963 | `youtube.com/watch?v=ncHZby73h4I` |
 
 `<s>` = timestamp in seconds in the source video; `L`/`R` = which player's rack; `<i>` = tile
 position within that rack.
