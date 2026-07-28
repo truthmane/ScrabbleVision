@@ -1,6 +1,6 @@
 # NASPA Finals rack held-out set — evaluation only, NEVER training data
 
-435 real rack tile crops (black tile / white text), all from the same single broadcast: the 2026
+319 real rack tile crops (black tile / white text), all from the same single broadcast: the 2026
 Scrabble Players Championship "Day 5 | Best-of-Five Finals | NWL" match (Orry Swift vs. Mack
 Meller), `youtube.com/watch?v=hC-e2HikEZU`.
 
@@ -8,21 +8,23 @@ Meller), `youtube.com/watch?v=hC-e2HikEZU`.
 training data.** Its entire value is as a fixed, honest, never-trained-on benchmark for measuring
 real rack-crop accuracy on the hardest domain this project has found (a physical black-tile rack,
 photographed at an angle, under real venue lighting — not a clean board-crop or a broadcast
-graphic). Every retrain in this project's history has been measured against this set (or an
-earlier, smaller version of it) specifically because it is the one number that resisted easy wins:
-59.5% → 64.7% → 58.6% (regression) → 61.2%, across three separate training rounds, none of which
-came close to the ~97% board accuracy achieved elsewhere. See `docs/classifier-accuracy-plan.md`'s
-"Round 5/6" sections and `models/README.md` for the full history.
+graphic). See `docs/classifier-accuracy-plan.md`'s "Round 5/6" sections and `models/README.md` for
+the full retrain history.
+
+**The original 116-tile version of this set was thrown out (2026-07-28) after the user spot-checked
+it and confirmed what an isolated re-measurement had flagged**: the deployed checkpoint scored only
+61.2% on those 116 tiles but 90.3% on the 319 below (harvested from the identical broadcast/domain)
+— a ~29-point gap that meant one of the two measurements was wrong, not that the domain itself is
+uniquely hard. Visual inspection found the old 116 contained real harvest-time defects — crops
+showing empty wood-grain background with no tile at all, and crops labeled for one letter but
+actually centered on/dominated by the adjacent tile — the same failure mode as an earlier
+"corrupted eval batch" incident already documented in this project for board-crop data. **Every
+accuracy number quoted anywhere in this project's history against "the 116-tile NASPA held-out
+set" (59.5%, 64.7%, 58.6%, 61.2%) should be read as measured against this now-discredited data and
+is not necessarily a reliable reflection of real model accuracy on this domain.**
 
 ## Provenance
 
-- `<LABEL>_orig116_*.png` (116 tiles): the original held-out set, assembled early in this project
-  from several earlier scratchpad harvesting passes against this same broadcast (`rack_tiles/`,
-  `ws3d/harvested_racks/`, `ws3d/harvested_racks_g22/`, `ws3d/harvested_racks_g25/` — the "g22"/"g25"
-  suffixes are historical directory names from that harvesting pass, not meaningful game IDs here).
-  This set lived only in ephemeral per-session scratchpad for a long time and was at real risk of
-  being lost between sessions (the same failure mode `training/data/real_tiles/` was committed to
-  prevent) — committing it here fixes that.
 - `<LABEL>_naspa_finals_bcast_f<seconds>_<L|R><idx>.png` (319 tiles): harvested at scale by sampling
   the full ~8h23m broadcast every 100s and running the same OCR-cross-check + wood-tray-strip
   filter pipeline used for the training-side NASPA Day 3 harvest (see
@@ -31,7 +33,7 @@ came close to the ~97% board accuracy achieved elsewhere. See `docs/classifier-a
   instead of `training/data/real_tiles/`). Spot-checked via a 30-tile random montage, zero
   mislabels found.
 
-No exact-duplicate crops exist across the full 435 (checked via content hash).
+No exact-duplicate crops exist (checked via content hash).
 
 ## Regenerating / extending
 
