@@ -8,38 +8,53 @@ The per-cell letter classifier described in `docs/classifier-accuracy-plan.md`.
   first conv adapted to 1-channel input) — see `training/classify/model.py`.
 - **Classes**: 27 (`A`-`Z` + `BLANK`), in the order stored in the checkpoint's `classes` list.
   Always read this list back from the checkpoint rather than assuming an order.
-- **Calibration**: temperature-scaled, `T ≈ 1.029` (stored in the checkpoint; applied
-  automatically by `TileClassifierModel`, see below). Fitted on the same held-out set used to
+- **Calibration**: temperature-scaled, `T ≈ 1.176` (stored in the checkpoint; applied
+  automatically by `TileClassifierModel`, see below). Fitted on the same held-out sets used to
   report accuracy — see the calibration caveat in `training/classify/calibrate.py`'s docstring.
 - **Training data**: synthetic renders (`training/synth_render`) pretrained, then fine-tuned
-  incrementally on real tile crops now committed at `training/data/real_tiles/` (3,363 tiles as
+  incrementally on real tile crops now committed at `training/data/real_tiles/` (4,633 tiles as
   of this checkpoint, see that directory's own README for exact per-venue provenance) — **the
   previous ~620-tile dataset this checkpoint's predecessor was built from no longer exists**; it
   lived only in an ephemeral per-session scratchpad and was lost between sessions.
   `training/data/real_tiles/` is committed specifically so this can't happen again — the actual
   data a checkpoint depends on should always be inspectable/extendable, not just the checkpoint
   itself.
-- **Honest accuracy**: **96.7%** (117/121) board tiles on the same *venue-disjoint* Causeway
-  held-out set used throughout this project's history (was 93.4%, 113/121) — the model is a chain
-  of incremental continuation fine-tunes, each measured on this same held-out set: the 4 Mack
-  Meller 2026 SPC games (392 tiles, 81.0% → 85.1%), 7 more cross-tables.com games (680 tiles,
-  85.1% → 91.7%), 10 more spanning 8 distinct tournaments 2019-2026 (981 tiles, 91.7% → 93.4%),
-  then 1,189 real WESPA broadcast rack tiles (93.4% → 96.7%, see below) — none of these training
-  venues ever touch the held-out set.
-- **Rack accuracy, measured two ways (a real lesson in what "held-out" actually needs to mean
-  for a domain, not just a venue)**: on a *time-disjoint* split of the same WESPA broadcast the
-  new rack training data came from (283 tiles from the last ~20% of the video's timeline, never
-  trained on), accuracy went 88.7% → 94.7%. But that overlay is a clean rendered graphic, not a
-  photographed physical rack — a fundamentally easier target. The number that actually matters is
-  on the **original, harder held-out set**: 116 real photographed rack tiles from NASPA broadcasts
-  (physical tiles on a real rack, angled/lit like an actual camera would see them), never touched
-  by any training data including this round's: **64.7%** (75/116), up from **59.5%** (69/116)
-  before this retrain — a real, modest, honestly-measured win, not the dramatic fix the WESPA
-  number alone would suggest. See `training/data/real_tiles/README.md`'s "Rack tile crops" section
-  for how the WESPA data was harvested, and note it does NOT close the physical-rack domain gap by
-  itself — it helps generalization broadly (rack-shaped crops in general, not just this broadcast's
-  specific rendering), but a real photographed rack from a different venue/camera remains
-  measurably harder than either held-out set that trained on WESPA data would suggest on its own.
+- **Honest accuracy**: **97.5%** (118/121) board tiles on the same *venue-disjoint* Causeway
+  held-out set used throughout this project's history (was 93.4%, 113/121 a few rounds back) — the
+  model is a chain of incremental continuation fine-tunes, each measured on this same held-out set:
+  the 4 Mack Meller 2026 SPC games (392 tiles, 81.0% → 85.1%), 7 more cross-tables.com games (680
+  tiles, 85.1% → 91.7%), 10 more spanning 8 distinct tournaments 2019-2026 (981 tiles, 91.7% →
+  93.4%), 1,189 real WESPA broadcast rack tiles (93.4% → 96.7%), then 1,270 more real rack tiles
+  from two more venues (96.7% → 97.5%, see below) — none of these training venues ever touch the
+  held-out set.
+- **Rack accuracy across five real venues — the honest, multi-domain picture, not one number.**
+  A round-3 correction is worth stating plainly first: an earlier version of this README described
+  the WESPA rack tiles as "a clean rendered graphic, not a real photograph" — **that was wrong**.
+  Direct pixel-level zoom on multiple broadcasts (WESPA, this project's own "4th of July" harvest,
+  and two more NASPA-produced streams) showed all of them are genuine photographs of physical
+  racks; the visual mistake came from judging small downscaled screenshots instead of zooming in.
+  Corrected going forward: WESPA and "4th of July / Bob Linn Superstars" both use white
+  tiles/red-maroon lettering; NASPA's "NWL Championship Division Day 3" stream uses **black
+  tiles/white lettering** — the same physical tile-set style as the original, hardest held-out set
+  below. Five held-out measurements, each on a different real venue never trained on:
+  | Held-out set | Domain | Before this round | After |
+  |---|---|---|---|
+  | Causeway (board) | white tiles, venue-disjoint | 96.7% (117/121) | **97.5% (118/121)** |
+  | WESPA rack, time-disjoint split | white/red, real photo | 94.7% (268/283) | **95.1% (269/283)** |
+  | "4th of July" rack, time-disjoint split | white/red, real photo, different tournament | 89.8% zero-shot | **94.7% (177/187)** |
+  | NASPA "Day 3" rack, time-disjoint split | **black/white**, real photo, different tournament | 69.8% zero-shot (74/106) | **85.9% (91/106)** |
+  | Original NASPA Finals rack (`held_out_rack_naspa`, 116 tiles) | black/white, real photo, a *different specific game* than Day 3 | 64.7% (75/116) | **61.2% (71/116)** |
+  Four of five improved, three of them clearly (Day 3's own held-out jumped 16 points — real
+  evidence the model learned genuine black-tile-domain generalization, not just Day-3-specific
+  overfitting). The one regression (NASPA Finals, -3.5 points) is on the smallest set (116 tiles,
+  where a swing of 3-4 tiles is close to one standard error on the underlying binomial estimate) —
+  promoted anyway after explicit user sign-off, since the weight of evidence (large, clearly-real
+  wins elsewhere) outweighs a single-digit-tile difference on the noisiest measurement. **Still not
+  a solved problem**: even the best number here (85.9% on Day 3) trails board accuracy by over 10
+  points, and the Finals-specific number hasn't moved past ~60-65% across three different training
+  rounds — there may be something about that one specific game/camera-moment that's unusually hard
+  independent of general venue diversity. See `training/data/real_tiles/README.md`'s "Rack tile
+  crops" section for how each venue was harvested.
 - **Catastrophic forgetting is real here, confirmed on two separate rounds now.** An identical
   fine-tune at the "normal" settings used historically (8 epochs, `lr=1e-3`) actively *regressed*
   held-out accuracy the first time this was tried (round 1: 72.7%, vs. 85.1% with gentle

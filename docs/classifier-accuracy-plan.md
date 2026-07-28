@@ -429,22 +429,79 @@ for the method) — `training/data/real_tiles/` grew from 2,174 to 3,363 tiles.
 
 **Honest measurement needed a harder held-out set than the obvious one.** A time-disjoint split of
 the same WESPA broadcast (283 tiles, last ~20% of the timeline, never trained on) went 88.7%→94.7%
-— but that overlay is a clean rendered graphic, not a photographed physical rack, so this number
-alone would overstate the real-world win. Re-measured against the **original, harder held-out set**
-(116 real photographed NASPA rack tiles, physically different domain, never touched by any of this
-round's training data): **59.5% (69/116) → 64.7% (75/116)** — a real, modest, honestly-measured
-improvement, not the dramatic fix the WESPA-only number would suggest. Board accuracy (same
-venue-disjoint Causeway held-out set as every round) also improved, not just held steady:
-**93.4% (113/121) → 96.7% (117/121)**. Gentle incremental continuation (2 epochs, `lr=1e-4`) from
-the round-4 checkpoint, same recipe as every prior round. Recalibrated temperature to `T ≈ 1.029`;
-checkpoint promoted with explicit user confirmation (overwriting the deployed, Git-LFS-tracked
-checkpoint is a sensitive action).
+— at the time this was (wrongly, see Round 6) attributed to WESPA being "a clean rendered graphic,
+not a photographed physical rack," on the theory that this number alone would overstate the
+real-world win. Re-measured against the **original, harder held-out set** (116 real photographed
+NASPA rack tiles, a different specific game/venue, never touched by any of this round's training
+data): **59.5% (69/116) → 64.7% (75/116)** — a real, modest, honestly-measured improvement. Board
+accuracy (same venue-disjoint Causeway held-out set as every round) also improved, not just held
+steady: **93.4% (113/121) → 96.7% (117/121)**. Gentle incremental continuation (2 epochs, `lr=1e-4`)
+from the round-4 checkpoint, same recipe as every prior round. Recalibrated temperature to
+`T ≈ 1.029`; checkpoint promoted with explicit user confirmation (overwriting the deployed,
+Git-LFS-tracked checkpoint is a sensitive action).
 
-**Lesson worth keeping**: when a new training venue is also going to be a held-out measurement
-venue, a held-out split of *that same venue* is necessary but not sufficient — if the venue itself
-is an easier domain than the one the number is meant to stand in for (a broadcast graphic vs. a
-real photographed rack), the easier held-out number can look like a bigger win than the metric that
-actually matters shows. Keep the original hard held-out set around and measure both.
+**Lesson (later revised in Round 6, but the underlying caution was directionally right)**: when a
+new training venue is also going to be a held-out measurement venue, a held-out split of *that same
+venue* is necessary but not sufficient on its own — always also check a genuinely different, harder
+held-out venue before trusting a training-venue-only number. What turned out to be wrong was the
+specific claim that WESPA *itself* was the easy case; see Round 6.
+
+## Round 6: WESPA/NASPA were both real photos all along, a black-tile venue, and a genuine mixed result
+
+**Correction, found the hard way.** User asked to "hunt for a real-rack-photo venue" (assuming
+WESPA's rack data was a rendered graphic per Round 5's framing). Checked four broadcasts (WESPA
+itself re-examined, plus Galesburg, Montreal, "4th of July") and all looked like clean rendered
+overlays at a glance — small downscaled screenshots all showed crisp, uniform tile graphics. User
+pushed back directly on one link ("Are you kidding? The bottom quarter of the screen has the two
+racks"), which prompted a pixel-level zoom rather than a glance — and every single one, including
+the original WESPA data already trained on, turned out to be a genuine photograph (natural lighting
+gradients, tilted tiles, real wood grain, a scoresheet visible in the background). **The entire
+Round 5 "clean graphic vs. real photo" framing was wrong** — corrected in `models/README.md` and
+`training/data/real_tiles/README.md`. The real, useful distinction turned out to be tile *color
+scheme*: WESPA and "4th of July" both use white tiles/red-maroon text; NASPA's own "NWL
+Championship Division Day 3" broadcast uses black tiles/white text — the same color scheme as the
+original, hardest held-out set.
+
+**Harvested "4th of July / Bob Linn Superstars" (820 tiles) — a genuinely different tournament,
+same white/red tile style as WESPA.** Retrained (gentle continuation): board 96.7%→98.4%, WESPA
+rack 94.7%→95.8%, July4's own held-out 89.8%→93.6% — **but the original NASPA held-out set
+regressed 64.7%→58.6%**. Hypothesis: more of the same white/red tile style pulled the model further
+from NASPA's visually distinct black-tile style, rather than adding genuine cross-style diversity.
+**Not promoted** — first real case this project has had of a candidate that improved everything
+measured except the metric that mattered most.
+
+**User's call: look for a black-tile venue specifically, not just another venue.** Found it on
+NASPA's own channel — the "NWL Championship Division Day 3" stream (a different specific
+match/round than the original held-out set's Finals game) uses black tiles. Harvesting it surfaced
+a real, venue-color-dependent bug: the brightness-based junk filter from Round 5 (rejects crops
+darker than ~100, tuned for white tiles) was silently rejecting nearly all genuine black-tile crops
+(mean ~65-70, well under threshold) — first attempt yielded only 4 tiles from 324 frames. Lowering
+the threshold to let black tiles through then let a *different* junk class back in
+(intermission "Out for lunch — we'll be back" banners, which are also dark). Fixed with a
+color-scheme-agnostic signal instead of a brightness threshold: every genuine tile crop of any
+color sits on a warm wood-tray strip somewhere below the tile (red channel clearly exceeds blue at
+plausible brightness in a lower band of the crop), while banner text does not, regardless of how
+dark the banner is. This rejected 132 of 582 candidates; spot-checking both the rejected and
+accepted sets found zero errors either direction. Final: 450 clean black-tile rack tiles.
+
+**Retrained again (gentle continuation from the pre-July4 checkpoint, on WESPA+July4+Day3
+combined) — a large, clearly-real win on the new axis, but the original held-out set still dipped
+slightly.** Board 96.7%→97.5%, WESPA rack 94.7%→95.1%, July4 rack →94.7%, **Day 3's own held-out
+(black tile) 69.8%→85.9%** (a 16-point jump on 106 tiles — clearly a real generalization gain, not
+noise). But the original NASPA Finals held-out set (116 tiles, a *different specific game* than Day
+3) went 64.7%→61.2% — smaller than the July4-only regression, but still a regression. At n=116 a
+swing of 3-4 tiles is close to one standard error on the underlying binomial estimate, so this
+number alone can't distinguish "real residual regression" from "noise at this sample size." Promoted
+anyway after presenting both readings to the user and getting explicit sign-off, weighing the large
+clearly-real gains elsewhere against a small, statistically ambiguous dip on the noisiest
+measurement. Recalibrated `T ≈ 1.176`. `training/data/real_tiles/` now at 4,633 tiles (was 3,363).
+
+**Still an open problem, not solved**: even the best rack number here (85.9% on Day 3) trails board
+accuracy (97.5%) by over 10 points, and the original Finals-specific held-out number hasn't cleared
+~60-65% across three different training rounds — there may be something about that one specific
+game/camera-moment that's unusually hard independent of general venue/color diversity. Worth
+growing that 116-tile held-out set itself (more real photos from that same Finals game) before the
+next round, so future promote/don't-promote calls on it aren't fighting sample-size noise.
 
 ## Pitfalls for the implementer (learned the hard way in this repo)
 

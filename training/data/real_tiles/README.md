@@ -1,10 +1,11 @@
 # Real tile crop dataset
 
-3,363 real, individually-verified Scrabble tile crops, organized as an `ImageFolder`-compatible
+4,633 real, individually-verified Scrabble tile crops, organized as an `ImageFolder`-compatible
 directory (`<LETTER>/*.png`, plus `BLANK/` for blank tiles) for `training/classify/train.py`.
-2,174 are board-crop tiles (60x60 canonical, one per occupied board cell); the remaining 1,189
-(prefix `wespa_rack_*`) are rack-crop tiles harvested from broadcast rack overlays — see "Rack
-tile crops" below, they follow a different provenance/verification path than the board table.
+2,174 are board-crop tiles (60x60 canonical, one per occupied board cell); the remaining 2,459 are
+rack-crop tiles (prefixes `wespa_rack_*`, `july4_rack_bcast_*`, `naspa_day3_rack_bcast_*`)
+harvested from broadcast footage of real physical racks — see "Rack tile crops" below, they follow
+a different provenance/verification path than the board table.
 
 **Committed deliberately, unlike full broadcast frames/video** — these are small, individually
 cropped game-piece images (a single tile face each), not the copyrighted broadcast footage
@@ -51,20 +52,30 @@ directly on the source photo, RANSAC-fit a homography from the clicks, crop ever
 and every single crop was visually spot-checked (full per-tile montage, not just one-per-class)
 against its label before being added here.
 
-## Rack tile crops (`wespa_rack_*` prefix)
+## Rack tile crops (all genuine real photographs of physical racks)
 
-1,189 tiles cropped from the WESPA Word Wars broadcast's on-screen rack overlay, which displays
-both players' current rack tiles continuously at the bottom of the frame — a different source
-path than the board-crop provenance table above:
+2,459 tiles cropped from broadcast footage of real physical racks, across three distinct
+tournament venues/productions — a different source path than the board-crop provenance table
+above. **Correction worth stating plainly**: an earlier version of this README described the
+WESPA tiles as coming from "a clean rendered graphic overlay." That was wrong — direct pixel-level
+zoom on all three venues below shows genuine photographs (natural lighting gradients, tilted
+tiles, real wood grain, background clutter), not rendered graphics. The mistake came from judging
+small downscaled screenshots instead of zooming in; caught after the user pushed back directly on
+one of them.
 
-- `wespa_rack_g3t0_<i>.png` (13 tiles): the original pilot frame (WESPA Game 3, `t=0`), read and
-  labeled manually pixel-by-pixel off a clear, legible broadcast graphic.
-- `wespa_rack_bcast_f<seconds>_<L|R><idx>.png` (1,176 tiles): harvested at scale from the full
-  6h52m WESPA "games 1-7" broadcast, sampled at 150s and 50s intervals (`<seconds>` = timestamp
-  in the source video), `L`/`R` = which player's rack, `<idx>` = tile position within that rack.
+| Prefix | Venue | Tile style | Tiles | Source video |
+|---|---|---|---|---|
+| `wespa_rack_g3t0_<i>` | WESPA Word Wars (Albany NY), Game 3 pilot frame | white tile, red/maroon text | 13 | manually read pixel-by-pixel |
+| `wespa_rack_bcast_f<s>_<L\|R><i>` | WESPA Word Wars, full "games 1-7" broadcast | white tile, red/maroon text | 1,176 | `youtube.com/watch?v=YojCdbthGQY` |
+| `july4_rack_bcast_f<s>_<L\|R><i>` | "4th of July / Bob Linn Superstars" tournament, Day 1 | white tile, red/maroon text | 820 | `youtube.com/live/ROL1VARMt9U` |
+| `naspa_day3_rack_bcast_f<s>_<L\|R><i>` | 2026 Scrabble Players Championship, NWL Div. Day 3 (NASPA's own channel) | **black tile, white text** | 450 | `youtube.com/watch?v=ncHZby73h4I` |
 
-**Harvest method** (`scripts` not committed — this was a one-off scratchpad pipeline, not a
-reusable tool, since it depends on this specific broadcast's fixed rack-overlay layout):
+`<s>` = timestamp in seconds in the source video; `L`/`R` = which player's rack; `<i>` = tile
+position within that rack.
+
+**Harvest method** (scripts not committed — a one-off scratchpad pipeline per broadcast, not a
+reusable tool, since each depends on that specific broadcast's fixed rack-overlay layout and tile
+color scheme):
 1. Extract frames via `ffmpeg -ss <t> -i <video> -frames:v 1`.
 2. Locate each rack's letter glyphs via `pytesseract.image_to_boxes` (psm 7, whole rack as one
    "word") on the fixed on-screen rack region, then crop each tile using the median pitch between
@@ -75,31 +86,34 @@ reusable tool, since it depends on this specific broadcast's fixed rack-overlay 
    this second read agrees with the first pass's letter at that position — a cheap two-pass
    cross-check, not a confidence threshold (Tesseract's per-char confidence output was unusable
    here, always near 0 in psm 10 regardless of correctness).
-4. Reject any crop whose mean grayscale brightness is below 100 — this alone was enough to catch
-   every false-positive glyph the OCR pass found on intermission/title-card frames (a cyan
-   "letsplayscrabble.com" watermark, white commentary text, a scrolling banner), which are much
-   darker overall than a real cream tile + wood rack holder. Verified: a clean brightness gap
-   (highest rejected ~78, lowest kept ~133) with zero ambiguous cases in this dataset.
+4. Two junk filters, both needed because they catch different failure modes and neither alone is
+   color-scheme-agnostic: a brightness floor (rejects crops far darker than any real tile of that
+   venue's color — but this threshold is tile-color-dependent, roughly 100 for white tiles vs. as
+   low as 20 for black tiles, so it must be tuned per venue, not reused blindly) and a **wood-tray
+   strip check** (`has_wood_tray_strip`: scans a lower band of the crop for any row where red
+   clearly exceeds blue at plausible brightness — every genuine tile crop, of any tile color, sits
+   on a warm wood-tray background somewhere below the tile, while intermission/announcement banner
+   text does not, regardless of how dark the banner itself is). The wood-strip check was added
+   specifically because the NASPA Day 3 harvest (black tiles) needed such a low brightness floor
+   that "Out for lunch — we'll be back" / "See you tomorrow @ 9:00" banner crops started passing
+   the brightness filter alone; the wood-strip check rejected all of them (132 of an initial 582
+   candidates) while a spot-check of both the rejected and accepted sets found zero errors either
+   direction.
 5. Blank tiles detected separately (near-zero dark-pixel fraction in the letter region) rather
    than relying on OCR, since a blank has no glyph for either OCR pass to read at all.
-6. Manually spot-checked via random-sample montages (30 tiles at a time) against the source
-   crops before merging — zero mislabels found in the post-filter set across two independent
-   30-tile checks.
+6. Manually spot-checked via random-sample montages (24-30 tiles at a time) against the source
+   crops before merging — zero mislabels found in the post-filter set across every venue's checks.
 
-No exact-duplicate crops exist in this batch (checked via content hash) — even at 150s spacing,
-JPEG/exposure noise alone made every crop byte-distinct, and the two expert players in this
-broadcast change their racks often enough that 150-450s sampling rarely caught the same rack twice
-anyway.
+No exact-duplicate crops exist in any of these batches (checked via content hash) — even at
+50-150s sampling spacing, JPEG/exposure noise alone made every crop byte-distinct, and expert
+players change their racks often enough that repeat sampling rarely caught the same rack twice.
 
-**Retrained and honestly re-measured** (see `models/README.md` for the full numbers). A gentle
-continuation fine-tune (2 epochs, `lr=1e-4`) using these tiles, holding out both a venue-disjoint
-board split (Causeway, unchanged) and a time-disjoint split of this same WESPA broadcast (last
-~20% of the timeline, never trained on), improved board accuracy 93.4%→96.7% and WESPA-rack
-accuracy 88.7%→94.7%. Critically, also re-measured against the ORIGINAL held-out rack set (116
-real photographed NASPA rack tiles, a genuinely different and harder domain than this WESPA
-broadcast's clean rendered overlay) rather than trusting the easier WESPA number alone: 59.5%→64.7%
-— a real, modest win, not the dramatic fix the WESPA-only number would suggest. This checkpoint is
-now `models/tile_classifier_v1.pt`.
+**Retrained and honestly re-measured across three rounds** (full numbers, including the mid-series
+regression that motivated hunting for a black-tile venue, are in `models/README.md`). Net result
+after all three: board accuracy 93.4%→97.5%, and — measured against the harder, non-WESPA-style
+held-out sets rather than trusting the easiest number — the NASPA Day 3 held-out set (black tile,
+same color scheme as the hardest original benchmark) went 69.8%→85.9%. This checkpoint is now
+`models/tile_classifier_v1.pt`.
 
 ## Regenerating / extending
 
