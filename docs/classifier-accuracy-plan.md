@@ -503,6 +503,30 @@ game/camera-moment that's unusually hard independent of general venue/color dive
 growing that 116-tile held-out set itself (more real photos from that same Finals game) before the
 next round, so future promote/don't-promote calls on it aren't fighting sample-size noise.
 
+## Round 7: WESPA Games 3-7 board harvest — rare letters finally covered, and a learning-rate-sensitivity lesson
+
+**477 more real board tiles**, across WESPA Word Wars Games 3-7 (the same "Games 1-7" broadcast
+Games 1-2 came from earlier this session), harvested via lightweight single-frame extraction
+instead of downloading each game's video segment: storyboard sprite sheets (`yt-dlp -f sb1`)
+located each game's rough boundary, then one direct HD frame per game (`yt-dlp -f 399 -g` +
+`ffmpeg -ss <t> -frames:v 1`) once the frame's on-screen score and ticker text were grep-verified
+against that game's own GCG. This finally gives the venue real coverage on the rare letters that
+had been stuck at 0-2 examples after Games 1-2: J 55, K 59, Q 60, X 61, Z 66. Full provenance and
+the spot-check-caught row-14 frame-edge corruption (9 crops dropped across 3 games) are in
+`training/data/real_tiles/README.md`.
+
+**The standard gentle recipe (2 epochs, `lr=1e-4`) cost 2 points on the Causeway held-out set for
+the first time** (97.5% [118/121] -> 95.9% [116/121], two new mistakes on previously-correct,
+unambiguous tiles — G->B twice, L->J once, confirmed by eye, not small-N noise on an easy class).
+Cutting to 1 epoch at the same rate didn't fix it (still 95.9%), isolating the cause to the
+learning rate rather than epoch count. Halving it (`lr=5e-5`, still 2 epochs) restored zero
+regression exactly: 97.5% (118/121), the identical 3 baseline mistakes. Promoted after presenting
+both the regression and the fix to the user. **Takeaway for future rounds this size (~450+ tiles
+at once): try `5e-5` first rather than assuming the `1e-4` default is always safe** — it may be
+that larger single-round batches need a gentler rate than the smaller (~90-100 tile) rounds this
+default was originally tuned against. Recalibrated `T≈1.074`. `training/data/real_tiles/` now at
+6,542 tiles (was 6,065).
+
 ## Pitfalls for the implementer (learned the hard way in this repo)
 
 - BGR (OpenCV, perception layer) vs RGB (PIL, training) — convert exactly once, at the
