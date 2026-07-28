@@ -1,8 +1,11 @@
 import random
 
+import pytest
+
 from training.synth_render.tile_renderer import (
     FINAL_SIZE,
     TILE_CLASSES,
+    _solve_perspective_coeffs,
     augment_real_photo,
     augment_tile,
     generate_synthetic_dataset,
@@ -36,6 +39,27 @@ def test_augment_real_photo_preserves_size_and_mode():
     out = augment_real_photo(base, rng=random.Random(1))
     assert out.size == base.size
     assert out.mode == "RGB"
+
+
+def test_solve_perspective_coeffs_maps_dst_corners_back_to_src():
+    # Regression test for a bug where `b` was built from `dst` instead of
+    # `src`, which made the solver trivially return the identity transform
+    # (invisible for a long time since it was only ever exercised with a
+    # tiny jitter that looks similar to a no-op at a glance).
+    size = 60
+    src = [(0, 0), (size, 0), (size, size), (0, size)]
+    dst = [(10, 0), (size - 10, 0), (size, size), (0, size)]
+    coeffs = _solve_perspective_coeffs(src, dst)
+
+    assert coeffs != (1, 0, 0, 0, 1, 0, 0, 0)
+
+    a, b, c, d, e, f, g, h = coeffs
+    for (dx, dy), (sx, sy) in zip(dst, src):
+        denom = g * dx + h * dy + 1
+        mapped_x = (a * dx + b * dy + c) / denom
+        mapped_y = (d * dx + e * dy + f) / denom
+        assert mapped_x == pytest.approx(sx, abs=1e-6)
+        assert mapped_y == pytest.approx(sy, abs=1e-6)
 
 
 def test_generate_synthetic_dataset_writes_expected_file_counts(tmp_path):

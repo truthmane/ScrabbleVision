@@ -20,7 +20,7 @@ import random
 import string
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -101,20 +101,43 @@ def _random_background(rng: random.Random, size: int) -> Image.Image:
     return Image.new("RGB", (size, size), jitter)
 
 
-def _perspective_coeffs(rng: random.Random, size: int, max_jitter_frac: float = 0.06) -> Tuple[float, ...]:
-    j = size * max_jitter_frac
-    src = [(0, 0), (size, 0), (size, size), (0, size)]
-    dst = [(x + rng.uniform(-j, j), y + rng.uniform(-j, j)) for x, y in src]
+def _solve_perspective_coeffs(src: List[Tuple[float, float]], dst: List[Tuple[float, float]]) -> Tuple[float, ...]:
+    """The 8 perspective-transform coefficients PIL's `Image.transform(...,
+    Image.PERSPECTIVE, coeffs)` expects: for each OUTPUT pixel at a `dst`
+    corner, sample the INPUT image at the corresponding `src` corner (PIL's
+    own transform is defined output->input) -- shared by every caller that
+    needs a perspective warp from one quadrilateral to another, so the
+    linear-algebra itself only exists in one place.
 
-    # Solve for the 8 perspective transform coefficients PIL expects.
+    `b` (the right-hand side of the least-squares solve) must be built
+    from `src`, not `dst` -- plugging a `dst` corner into the solved
+    formula has to yield the matching `src` corner, which is the entire
+    point of the mapping. Building `b` from `dst` instead (an earlier bug
+    here, found via a visual grid-warp test that came back looking
+    completely untransformed) makes the solve trivially return the
+    identity transform, since it's then asking "what maps dst back to
+    itself" rather than "what maps dst back to src". This stayed
+    invisible for a long time because it was only ever exercised with a
+    tiny (~5-6%) random jitter (`_perspective_coeffs`, below) -- a no-op
+    identity transform and a genuinely-applied tiny jitter look almost
+    identical at a glance, so nothing before this actually visually
+    verified the warp was doing anything.
+    """
     matrix = []
     for (sx, sy), (dx, dy) in zip(dst, src):
         matrix.append([sx, sy, 1, 0, 0, 0, -dx * sx, -dx * sy])
         matrix.append([0, 0, 0, sx, sy, 1, -dy * sx, -dy * sy])
     A = np.array(matrix, dtype=np.float64)
-    b = np.array([coord for point in dst for coord in point], dtype=np.float64)
+    b = np.array([coord for point in src for coord in point], dtype=np.float64)
     coeffs, *_ = np.linalg.lstsq(A, b, rcond=None)
     return tuple(coeffs)
+
+
+def _perspective_coeffs(rng: random.Random, size: int, max_jitter_frac: float = 0.06) -> Tuple[float, ...]:
+    j = size * max_jitter_frac
+    src = [(0, 0), (size, 0), (size, size), (0, size)]
+    dst = [(x + rng.uniform(-j, j), y + rng.uniform(-j, j)) for x, y in src]
+    return _solve_perspective_coeffs(src, dst)
 
 
 def augment_tile(tile_img: Image.Image, rng: Optional[random.Random] = None) -> Image.Image:
