@@ -408,6 +408,44 @@ on just the 981 new tiles took held-out accuracy **91.7% (111/121) → 93.4% (11
 Recalibrated temperature to `T ≈ 1.116`; checkpoint promoted. `training/data/real_tiles/` now at
 2,174 tiles total (1,193 → 2,174 this round).
 
+## Round 5 of real data: 1,189 real WESPA rack tiles, 93.4% → 96.7% board / a genuine but modest rack win
+
+**Four separate attempts at synthetic rack augmentation (warping existing board crops to look
+rack-like) all failed first**, an honestly-reported negative result: perspective+lighting warp
+(59.5%→55.2%), a loose non-square-crop variant targeting the real measured aspect-ratio mismatch
+between board crops and RF-DETR's rack boxes (still flat/negative), then more epochs of the same
+(56.9%, 56.0%) — each round improved board accuracy while further *hurting* rack accuracy, meaning
+the augmented data resembled "a slightly different flavor of clean tile" rather than genuine rack
+distortion. Found and fixed a real bug along the way (`_solve_perspective_coeffs` built its
+least-squares RHS from `dst` instead of `src`, silently returning the identity transform), but the
+augmentation approach itself was abandoned once four consecutive attempts failed to move the
+number that mattered.
+
+**Pivoted to real data**: the WESPA Word Wars broadcast displays both players' rack tiles
+continuously at the bottom of every frame, so real rack photos could be harvested from the exact
+same broadcast already used for board data. Harvested 1,189 real rack tiles (OCR-cross-check +
+brightness-filter pipeline, see `training/data/real_tiles/README.md`'s "Rack tile crops" section
+for the method) — `training/data/real_tiles/` grew from 2,174 to 3,363 tiles.
+
+**Honest measurement needed a harder held-out set than the obvious one.** A time-disjoint split of
+the same WESPA broadcast (283 tiles, last ~20% of the timeline, never trained on) went 88.7%→94.7%
+— but that overlay is a clean rendered graphic, not a photographed physical rack, so this number
+alone would overstate the real-world win. Re-measured against the **original, harder held-out set**
+(116 real photographed NASPA rack tiles, physically different domain, never touched by any of this
+round's training data): **59.5% (69/116) → 64.7% (75/116)** — a real, modest, honestly-measured
+improvement, not the dramatic fix the WESPA-only number would suggest. Board accuracy (same
+venue-disjoint Causeway held-out set as every round) also improved, not just held steady:
+**93.4% (113/121) → 96.7% (117/121)**. Gentle incremental continuation (2 epochs, `lr=1e-4`) from
+the round-4 checkpoint, same recipe as every prior round. Recalibrated temperature to `T ≈ 1.029`;
+checkpoint promoted with explicit user confirmation (overwriting the deployed, Git-LFS-tracked
+checkpoint is a sensitive action).
+
+**Lesson worth keeping**: when a new training venue is also going to be a held-out measurement
+venue, a held-out split of *that same venue* is necessary but not sufficient — if the venue itself
+is an easier domain than the one the number is meant to stand in for (a broadcast graphic vs. a
+real photographed rack), the easier held-out number can look like a bigger win than the metric that
+actually matters shows. Keep the original hard held-out set around and measure both.
+
 ## Pitfalls for the implementer (learned the hard way in this repo)
 
 - BGR (OpenCV, perception layer) vs RGB (PIL, training) — convert exactly once, at the

@@ -91,12 +91,15 @@ JPEG/exposure noise alone made every crop byte-distinct, and the two expert play
 broadcast change their racks often enough that 150-450s sampling rarely caught the same rack twice
 anyway.
 
-**Not yet used in a retrain.** These tiles exist to fill the real rack-crop accuracy gap measured
-earlier (board 93.4% vs. rack ~59.5% on a small held-out set) — see `docs/classifier-accuracy-plan.md`
-and prior fine-tune attempts using *synthetic* rack augmentation of board crops, all of which
-failed to move real rack accuracy. A future retrain against this real data should hold out a fresh
-split of these WESPA tiles (not just the pre-existing small held-out set, which may not be
-venue-disjoint from this broadcast) before trusting any accuracy number.
+**Retrained and honestly re-measured** (see `models/README.md` for the full numbers). A gentle
+continuation fine-tune (2 epochs, `lr=1e-4`) using these tiles, holding out both a venue-disjoint
+board split (Causeway, unchanged) and a time-disjoint split of this same WESPA broadcast (last
+~20% of the timeline, never trained on), improved board accuracy 93.4%→96.7% and WESPA-rack
+accuracy 88.7%→94.7%. Critically, also re-measured against the ORIGINAL held-out rack set (116
+real photographed NASPA rack tiles, a genuinely different and harder domain than this WESPA
+broadcast's clean rendered overlay) rather than trusting the easier WESPA number alone: 59.5%→64.7%
+— a real, modest win, not the dramatic fix the WESPA-only number would suggest. This checkpoint is
+now `models/tile_classifier_v1.pt`.
 
 ## Regenerating / extending
 

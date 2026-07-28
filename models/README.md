@@ -8,23 +8,38 @@ The per-cell letter classifier described in `docs/classifier-accuracy-plan.md`.
   first conv adapted to 1-channel input) — see `training/classify/model.py`.
 - **Classes**: 27 (`A`-`Z` + `BLANK`), in the order stored in the checkpoint's `classes` list.
   Always read this list back from the checkpoint rather than assuming an order.
-- **Calibration**: temperature-scaled, `T ≈ 1.078` (stored in the checkpoint; applied
+- **Calibration**: temperature-scaled, `T ≈ 1.029` (stored in the checkpoint; applied
   automatically by `TileClassifierModel`, see below). Fitted on the same held-out set used to
   report accuracy — see the calibration caveat in `training/classify/calibrate.py`'s docstring.
 - **Training data**: synthetic renders (`training/synth_render`) pretrained, then fine-tuned
-  incrementally on real tile crops now committed at `training/data/real_tiles/` (2,174 tiles as
+  incrementally on real tile crops now committed at `training/data/real_tiles/` (3,363 tiles as
   of this checkpoint, see that directory's own README for exact per-venue provenance) — **the
   previous ~620-tile dataset this checkpoint's predecessor was built from no longer exists**; it
   lived only in an ephemeral per-session scratchpad and was lost between sessions.
   `training/data/real_tiles/` is committed specifically so this can't happen again — the actual
   data a checkpoint depends on should always be inspectable/extendable, not just the checkpoint
   itself.
-- **Honest accuracy**: **93.4%** (113/121) on a *venue-disjoint* held-out set — all Causeway
-  Challenge 2026 tiles (both tables) held out entirely; the model is a chain of three incremental
-  continuation fine-tunes, each measured on this same held-out set: the 4 Mack Meller 2026 SPC
-  games (392 tiles, 81.0% → 85.1%), 7 more cross-tables.com games (680 tiles, 85.1% → 91.7%), then
-  10 more spanning 8 distinct tournaments 2019-2026 (981 tiles, 91.7% → 93.4%) — none of these
-  training venues ever touch the held-out set.
+- **Honest accuracy**: **96.7%** (117/121) board tiles on the same *venue-disjoint* Causeway
+  held-out set used throughout this project's history (was 93.4%, 113/121) — the model is a chain
+  of incremental continuation fine-tunes, each measured on this same held-out set: the 4 Mack
+  Meller 2026 SPC games (392 tiles, 81.0% → 85.1%), 7 more cross-tables.com games (680 tiles,
+  85.1% → 91.7%), 10 more spanning 8 distinct tournaments 2019-2026 (981 tiles, 91.7% → 93.4%),
+  then 1,189 real WESPA broadcast rack tiles (93.4% → 96.7%, see below) — none of these training
+  venues ever touch the held-out set.
+- **Rack accuracy, measured two ways (a real lesson in what "held-out" actually needs to mean
+  for a domain, not just a venue)**: on a *time-disjoint* split of the same WESPA broadcast the
+  new rack training data came from (283 tiles from the last ~20% of the video's timeline, never
+  trained on), accuracy went 88.7% → 94.7%. But that overlay is a clean rendered graphic, not a
+  photographed physical rack — a fundamentally easier target. The number that actually matters is
+  on the **original, harder held-out set**: 116 real photographed rack tiles from NASPA broadcasts
+  (physical tiles on a real rack, angled/lit like an actual camera would see them), never touched
+  by any training data including this round's: **64.7%** (75/116), up from **59.5%** (69/116)
+  before this retrain — a real, modest, honestly-measured win, not the dramatic fix the WESPA
+  number alone would suggest. See `training/data/real_tiles/README.md`'s "Rack tile crops" section
+  for how the WESPA data was harvested, and note it does NOT close the physical-rack domain gap by
+  itself — it helps generalization broadly (rack-shaped crops in general, not just this broadcast's
+  specific rendering), but a real photographed rack from a different venue/camera remains
+  measurably harder than either held-out set that trained on WESPA data would suggest on its own.
 - **Catastrophic forgetting is real here, confirmed on two separate rounds now.** An identical
   fine-tune at the "normal" settings used historically (8 epochs, `lr=1e-3`) actively *regressed*
   held-out accuracy the first time this was tried (round 1: 72.7%, vs. 85.1% with gentle
