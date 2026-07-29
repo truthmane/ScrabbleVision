@@ -1047,9 +1047,16 @@ def _disrupt(watcher, player_id):
     # A large occlusion (stands in for a hand reaching across the board)
     # breaks the trailing settled window without itself needing to be
     # part of any later "settled" run -- see test_stays_idle... above for
-    # why a single-tile change alone isn't enough motion signal.
+    # why a single-tile change alone isn't enough motion signal. A locally
+    # seeded RandomState (not the global `np.random` state, which some
+    # unrelated earlier test may have already advanced) generating a full
+    # noise band -- not a single flat fill value -- avoids a real flake
+    # found running the full suite: a flat fill value drawn from the
+    # global RNG occasionally landed close enough to the board's own
+    # pixel values that the occlusion failed to clear the motion
+    # threshold at all, silently no-op'ing the disruption.
     frame = _blank_board_image()
-    frame[200:600, :] = np.random.randint(0, 255)
+    frame[200:600, :] = np.random.RandomState(0).randint(0, 255, frame[200:600, :].shape, dtype=np.uint8)
     watcher.observe_board_frame(frame, player_id=player_id)
 
 
