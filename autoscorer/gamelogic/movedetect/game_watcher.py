@@ -38,7 +38,18 @@ being a system rather than a collection of validated parts.
   tried. After `STALL_OBSERVATIONS` observations with no commit at all,
   a `STALLED` watchdog event fires and force-quarantines every confirmed
   cell with any failure history, as a backstop beyond per-cell
-  quarantine alone.
+  quarantine alone. A cell quarantined specifically for reading as a
+  detected blank gets a much shorter `BLANK_QUARANTINE_TTL_OBSERVATIONS`
+  instead of the generic TTL, and is excluded from the adaptive
+  reference's healing -- found live-testing a fresh checkpoint against a
+  real WESPA broadcast: a freshly-placed letter tile read as blank for
+  its first three observations (placement-blur, not a lasting problem --
+  the same tile read correctly moments later), and the generic 20-
+  observation TTL meant an operator had to reject the same truncated
+  candidate up to 20 times before the cell was reconsidered at all; worse,
+  healing (meant for cells suspected of being false-positive-occupied)
+  was erasing this *genuinely occupied* cell into the background
+  entirely, since it can't tell "misread" from "not really there."
 - Rack-camera processing (`record_rack`) is real but deliberately
   simpler than the board path: each player's rack frames are buffered
   and gated through the same stillness check (`stable_window`) the board
@@ -195,6 +206,23 @@ Time-limited, not permanent: a real tile that was quarantined for the
 wrong reason (e.g. a neighbor's fault, not its own) gets another chance
 against a since-advanced board; a genuinely persistent problem simply
 re-quarantines cheaply after failing again."""
+BLANK_QUARANTINE_TTL_OBSERVATIONS = 5
+"""Shorter TTL used only when a cell is quarantined because it kept
+reading as a detected blank (see `_BLANK_FAILURE_REASON`), not the
+generic `QUARANTINE_TTL_OBSERVATIONS`. Found on a real WESPA broadcast:
+a freshly-placed letter tile (the "N" of "DJIN", placed first among that
+turn's four tiles) read as BLANK for its first three observations --
+almost certainly motion blur / not-yet-settled right after the hand
+released it, since the identical tile read correctly at 99.7% confidence
+once the video moved a few seconds further on. With the generic 20-
+observation TTL, the operator had to reject the same truncated
+single-cell candidate up to 20 times before the cell was ever given a
+fresh look. A blank misread is far more likely to be transient placement
+blur than `QUARANTINE_TTL_OBSERVATIONS`'s persistent-problem case (a
+genuinely bad angle or a lasting occlusion), so it gets a much shorter
+cooldown; a genuinely, unresolvably blank tile just re-quarantines
+cheaply again after its next three failures, still never auto-publishing
+either way."""
 QUARANTINE_HEAL_DELAY = 2
 """Observations a cell must stay quarantined before the adaptive
 reference is allowed to heal it (see
@@ -212,6 +240,12 @@ all (even though per-cell quarantine is already excluding known-bad
 cells), something is still genuinely stuck -- emit a `STALLED` event and
 force-quarantine every confirmed cell with any failure history, rather
 than continuing to retry silently forever."""
+
+_BLANK_FAILURE_REASON = "a detected tile is a blank -- letter unknown until an operator confirms what it's played as"
+"""Single source of truth for the blank-failure reason string, returned
+by `_attempt_commit` and matched in `observe_board_frame` to pick
+`BLANK_QUARANTINE_TTL_OBSERVATIONS` over the generic TTL -- kept as one
+constant so the two can never silently drift apart."""
 
 SOFT_CELL_MIN_CONFIDENCE = 0.7
 """A SOFT cell (see `read_new_cells_voted`) is only usable as an
@@ -369,6 +403,16 @@ class GameWatcher:
         self._cell_failure_count: Counter = Counter()
         self._quarantined: Dict[Coord, int] = {}  # coord -> observation_index its quarantine expires
         self._quarantined_since: Dict[Coord, int] = {}  # coord -> observation_index it was quarantined
+        self._blank_quarantined: set = set()
+        """Coords currently quarantined specifically for reading blank
+        (see `_BLANK_FAILURE_REASON`), as opposed to any other failure
+        reason. `_refresh_reference_for_still_empty_cells`'s healing path
+        excludes these -- healing exists to fade a cell SUSPECTED of being
+        a false-positive-occupied artifact into the background, but a
+        blank-quarantined cell is known to be genuinely occupied (the
+        classifier saw *something* there, just couldn't confirm a
+        letter); healing it away would erase real evidence of a real
+        tile, not correct a false reading."""
         self._observations_since_commit: int = 0
         self._soft_cells: frozenset = frozenset()
         """Cells with partial (not unanimous) occupancy support across the
@@ -465,6 +509,7 @@ class GameWatcher:
                 healing = (
                     quarantined_since is not None
                     and (self._observation_index - quarantined_since) >= QUARANTINE_HEAL_DELAY
+                    and coord not in self._blank_quarantined
                 )
                 if self.board.is_empty(coord) and (not occupied or healing):
                     alpha = QUARANTINE_HEAL_ALPHA if healing else _REFERENCE_EMA_ALPHA
@@ -479,6 +524,7 @@ class GameWatcher:
         for cell in expired:
             del self._quarantined[cell]
             del self._quarantined_since[cell]
+            self._blank_quarantined.discard(cell)
 
     def observe_board_frame(self, frame: np.ndarray, player_id: str) -> WatcherEvent:
         """Feed one sampled board-camera frame in. `player_id` is whose
@@ -687,8 +733,14 @@ class GameWatcher:
                     failed_cells_this_observation.add(cell)
                     self._cell_failure_count[cell] += 1
                     if self._cell_failure_count[cell] >= FAILURE_QUARANTINE_THRESHOLD:
-                        self._quarantined[cell] = self._observation_index + QUARANTINE_TTL_OBSERVATIONS
+                        is_blank_cause = reason == _BLANK_FAILURE_REASON
+                        ttl = BLANK_QUARANTINE_TTL_OBSERVATIONS if is_blank_cause else QUARANTINE_TTL_OBSERVATIONS
+                        self._quarantined[cell] = self._observation_index + ttl
                         self._quarantined_since[cell] = self._observation_index
+                        if is_blank_cause:
+                            self._blank_quarantined.add(cell)
+                        else:
+                            self._blank_quarantined.discard(cell)
 
         self.state = WatcherState.DIFF_COMPUTED
 
@@ -782,10 +834,7 @@ class GameWatcher:
             # letter was arrived at. Using the resolved letter to pre-fill
             # an operator's review UI is a real future improvement, not
             # done here.
-            return (
-                "a detected tile is a blank -- letter unknown until an operator confirms what it's played as",
-                blank_coords,
-            )
+            return (_BLANK_FAILURE_REASON, blank_coords)
 
         placements = {coord: Tile(letter=label, is_blank=False) for coord, label in decoded.items()}
         try:

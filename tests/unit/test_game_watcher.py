@@ -508,6 +508,43 @@ def test_a_cluster_shrunk_by_quarantine_is_forced_to_operator_review(tmp_path):
     )
 
 
+def test_a_cell_quarantined_for_reading_blank_gets_the_shorter_blank_ttl(tmp_path):
+    """Regression test for a real usability bug found running the newly
+    retrained checkpoint against a live WESPA broadcast: the first tile of
+    a turn (the "N" of "DJIN") read as a detected blank for its first
+    three observations -- almost certainly motion blur right after the
+    hand released it, since the identical tile read correctly moments
+    later. With the generic `QUARANTINE_TTL_OBSERVATIONS` (20), the
+    operator had to reject the same truncated single-cell candidate up to
+    20 times before the cell was ever given a fresh look. A blank misread
+    is far more likely to be transient placement blur than a persistent
+    problem, so it must get the much shorter `BLANK_QUARANTINE_TTL_OBSERVATIONS`
+    instead.
+    """
+    classifier = _train_tiny_classifier(tmp_path)
+    watcher = _make_watcher(classifier, mode=PublishMode.AUTONOMOUS)
+    rng = random.Random(11)
+
+    watcher._board = BoardState({(5, 5): Tile("A")})
+
+    frame = _blank_board_image()
+    _place_tile(frame, 5, 6, "N", rng)
+    _place_tile(frame, 5, 7, "T", rng)
+    _place_tile(frame, 5, 8, None, rng)  # a real blank, adjacent only to (5, 7)
+
+    for _ in range(40):
+        event = watcher.observe_board_frame(frame.copy(), player_id="p1")
+        if event.scored_move is not None:
+            break
+
+    assert (5, 8) in watcher._quarantined, "the blank cell should have been quarantined"
+    remaining = watcher._quarantined[(5, 8)] - watcher._quarantined_since[(5, 8)]
+    assert remaining == gw_module.BLANK_QUARANTINE_TTL_OBSERVATIONS, (
+        "a cell quarantined for reading blank must get the shorter blank-specific TTL, "
+        f"not the generic {gw_module.QUARANTINE_TTL_OBSERVATIONS}-observation one"
+    )
+
+
 def test_truncated_candidate_never_auto_publishes_even_at_high_confidence(tmp_path):
     """A candidate smaller than the largest one its cluster could have
     produced is a truncation -- a real, measured risk (see
