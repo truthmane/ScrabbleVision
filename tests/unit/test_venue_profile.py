@@ -192,6 +192,40 @@ def test_a_saved_profile_without_a_lexicon_key_still_loads(tmp_path):
     assert loaded.lexicon is None
 
 
+def test_clock_regions_defaults_to_none():
+    profile = _sample_profile()
+    assert profile.clock_regions is None
+    assert profile.clock_regions_obj() is None
+
+
+def test_clock_regions_round_trips_through_save_and_load(tmp_path):
+    profile = VenueProfile(
+        name="clocked_venue",
+        corners=((0.0, 0.0), (500.0, 0.0), (500.0, 500.0), (0.0, 500.0)),
+        clock_regions=((190, 795, 410, 890), (1510, 795, 1810, 890)),
+    )
+    save_venue_profile(profile, directory=tmp_path)
+    loaded = load_venue_profile("clocked_venue", directory=tmp_path)
+    assert loaded.clock_regions == ((190, 795, 410, 890), (1510, 795, 1810, 890))
+    regions = loaded.clock_regions_obj()
+    assert regions.left == (190, 795, 410, 890)
+    assert regions.right == (1510, 795, 1810, 890)
+
+
+def test_a_saved_profile_without_a_clock_regions_key_still_loads(tmp_path):
+    """Every profile saved before this field existed (including the
+    committed configs/venues/wespa_word_wars.json, until it's explicitly
+    re-saved with clock regions) predates this key entirely."""
+    import json
+    profile = _sample_profile("pre_clock_venue")
+    data = profile.to_dict()
+    del data["clock_regions"]
+    (tmp_path / "pre_clock_venue.json").write_text(json.dumps(data))
+
+    loaded = load_venue_profile("pre_clock_venue", directory=tmp_path)
+    assert loaded.clock_regions is None
+
+
 def test_load_reference_board_raises_when_file_missing(tmp_path):
     profile = VenueProfile(
         name="test_venue",

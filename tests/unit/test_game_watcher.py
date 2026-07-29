@@ -11,6 +11,7 @@ from autoscorer.gamelogic.models import MoveType
 from autoscorer.gamelogic.movedetect.game_watcher import GameWatcher, WatcherState
 from autoscorer.gamelogic.publish import PublishGateway, PublishMode
 from autoscorer.perception.calibration.homography import BoardCalibration, cell_bounds
+from autoscorer.perception.clock.clock_reader import ClockRegions
 from training.classify.infer import TileClassifierModel
 from training.classify.train import run_training, save_checkpoint
 from training.synth_render.tile_renderer import FINAL_SIZE, augment_tile, render_tile
@@ -19,6 +20,25 @@ from tests.support.synth_board import blank_board_image as _blank_board_image
 from tests.support.synth_board import place_tile as _place_tile_full
 
 IDENTITY_CALIBRATION = BoardCalibration(homography=np.eye(3, dtype=np.float64))
+
+# Clock-margin test fixtures: a small patch OUTSIDE the rectified 900x900
+# board region (IDENTITY_CALIBRATION's homography only ever samples the
+# raw frame's top-left CANONICAL_SIZE square, so writing to this margin
+# can never be mistaken for a board cell by anything downstream).
+CLOCK_LEFT_BOX = (910, 10, 990, 90)
+CLOCK_RIGHT_BOX = (910, 110, 990, 190)
+_RED_BGR = (72, 71, 140)  # matches the real measured active-clock color
+_WHITE_BGR = (147, 148, 148)  # matches the real measured inactive-clock color
+
+
+def _with_clock_margin(board_img: np.ndarray, active_side) -> np.ndarray:
+    h, w, c = board_img.shape
+    canvas = np.zeros((h, w + 100, c), dtype=board_img.dtype)
+    canvas[:, :w] = board_img
+    for box, side in ((CLOCK_LEFT_BOX, "left"), (CLOCK_RIGHT_BOX, "right")):
+        x1, y1, x2, y2 = box
+        canvas[y1:y2, x1:x2] = _RED_BGR if side == active_side else _WHITE_BGR
+    return canvas
 
 
 def _place_tile(board_img: np.ndarray, row: int, col: int, letter, rng: random.Random) -> None:
@@ -41,7 +61,9 @@ def _train_tiny_classifier(tmp_path, labels=("A", "N", "T", "BLANK")):
     return TileClassifierModel(checkpoint_path, device="cpu")
 
 
-def _make_watcher(classifier, mode=PublishMode.AUTONOMOUS, confidence_threshold=0.9, rack_detector=None):
+def _make_watcher(
+    classifier, mode=PublishMode.AUTONOMOUS, confidence_threshold=0.9, rack_detector=None, clock_regions=None,
+):
     gateway = PublishGateway(mode=mode, confidence_threshold=confidence_threshold)
     return GameWatcher(
         calibration=IDENTITY_CALIBRATION,
@@ -50,6 +72,7 @@ def _make_watcher(classifier, mode=PublishMode.AUTONOMOUS, confidence_threshold=
         publish_gateway=gateway,
         rack_detector=rack_detector,
         still_frame_count=3,
+        clock_regions=clock_regions,
     )
 
 
@@ -542,6 +565,136 @@ def test_a_cell_quarantined_for_reading_blank_gets_the_shorter_blank_ttl(tmp_pat
     assert remaining == gw_module.BLANK_QUARANTINE_TTL_OBSERVATIONS, (
         "a cell quarantined for reading blank must get the shorter blank-specific TTL, "
         f"not the generic {gw_module.QUARANTINE_TTL_OBSERVATIONS}-observation one"
+    )
+
+
+def test_commit_is_withheld_until_the_clock_confirms_the_turn_ended(tmp_path):
+    """Regression test for a real usability problem found live-testing the
+    retrained checkpoint against two different real games: a player who
+    places a multi-tile word one letter at a time, pausing between tiles,
+    can make the board look completely "settled" -- and thus, to
+    stillness-only timing, "done" -- while genuinely mid-word. Both real
+    cases (WESPA "DJIN" and "HUIA") fragmented into several wrong
+    partial-word candidates an operator had to manually reject before the
+    real, complete word was ever proposed. The fix: gate every commit
+    attempt behind the on-screen chess clock's active side actually
+    switching, an independent, authoritative "this turn is over" signal
+    a real broadcast already carries and board pixels alone cannot fake.
+    """
+    classifier = _train_tiny_classifier(tmp_path)
+    watcher = _make_watcher(
+        classifier, mode=PublishMode.AUTONOMOUS,
+        clock_regions=ClockRegions(left=CLOCK_LEFT_BOX, right=CLOCK_RIGHT_BOX),
+    )
+    rng = random.Random(3)
+
+    frame = _blank_board_image()
+    _place_tile(frame, 7, 7, "A", rng)
+    _place_tile(frame, 7, 8, "N", rng)
+    # A real, fully-confirmable 2-cell placement -- but the clock still
+    # shows the mover ("left") active, so this must NOT commit yet, no
+    # matter how many more times the identical settled board is observed.
+    still_the_movers_turn = _with_clock_margin(frame, active_side="left")
+
+    final = None
+    for _ in range(8):
+        event = watcher.observe_board_frame(still_the_movers_turn.copy(), player_id="p1")
+        if event.scored_move is not None:
+            final = event
+            break
+    assert final is None, "must not commit while the clock still shows the mover active"
+    assert watcher.board.is_blank_board(), "nothing should have been applied to the board yet"
+
+    # The clock now shows the OTHER side active -- proof the mover
+    # genuinely finished. The identical board content should now commit.
+    turn_has_ended = _with_clock_margin(frame, active_side="right")
+    final = None
+    for _ in range(8):
+        event = watcher.observe_board_frame(turn_has_ended.copy(), player_id="p1")
+        if event.scored_move is not None:
+            final = event
+            break
+    assert final is not None, "must commit once the clock confirms the turn has ended"
+    assert set(final.scored_move.candidate.new_cells) == {(7, 7), (7, 8)}
+
+
+def test_baseline_capture_recovers_from_an_initially_ambiguous_clock_reading(tmp_path):
+    """Regression test for a real bug found live-testing this exact
+    feature against a real game: if the clock reading is still
+    ambiguous (neither side clearly red -- a transition frame, a brief
+    encoding artifact) at the EXACT instant a turn begins, the baseline
+    must not permanently lock onto that `None` reading for the rest of
+    the turn -- `None != <any real side>` is trivially true, which would
+    satisfy `turn_boundary_confirmed` immediately and defeat the entire
+    gate. The baseline must instead be captured from the first reliable
+    reading that comes along, whenever that is.
+    """
+    classifier = _train_tiny_classifier(tmp_path)
+    watcher = _make_watcher(
+        classifier, mode=PublishMode.AUTONOMOUS,
+        clock_regions=ClockRegions(left=CLOCK_LEFT_BOX, right=CLOCK_RIGHT_BOX),
+    )
+    rng = random.Random(5)
+
+    frame = _blank_board_image()
+    _place_tile(frame, 7, 7, "A", rng)
+    _place_tile(frame, 7, 8, "N", rng)
+
+    # A stretch of genuinely ambiguous clock frames right at the start --
+    # no real reading exists yet for this turn.
+    ambiguous = _with_clock_margin(frame, active_side=None)
+    for _ in range(3):
+        watcher.observe_board_frame(ambiguous.copy(), player_id="p1")
+    assert watcher._clock_side_at_turn_start is None, "must not have latched onto a fake baseline yet"
+
+    # Now a real reading arrives: the mover ("left") is active.
+    still_the_movers_turn = _with_clock_margin(frame, active_side="left")
+    final = None
+    for _ in range(8):
+        event = watcher.observe_board_frame(still_the_movers_turn.copy(), player_id="p1")
+        if event.scored_move is not None:
+            final = event
+            break
+    assert final is None, "must not commit while the (correctly, late-captured) baseline still shows the mover active"
+    assert watcher._clock_side_at_turn_start == "left"
+
+    # The clock switches -- now it must commit.
+    turn_has_ended = _with_clock_margin(frame, active_side="right")
+    final = None
+    for _ in range(8):
+        event = watcher.observe_board_frame(turn_has_ended.copy(), player_id="p1")
+        if event.scored_move is not None:
+            final = event
+            break
+    assert final is not None, "must commit once the clock confirms the turn has ended"
+
+
+def test_clock_that_never_switches_eventually_falls_back_to_committing_anyway(tmp_path, monkeypatch):
+    """A misconfigured or broken clock region (wrong pixel coordinates for
+    a differently-cropped stream, an overlay redesign) must degrade to
+    "no worse than stillness-only timing eventually," never a silent,
+    permanent stall with nothing in the operator UI to show for it."""
+    monkeypatch.setattr(gw_module, "CLOCK_FALLBACK_OBSERVATIONS", 3)
+    classifier = _train_tiny_classifier(tmp_path)
+    watcher = _make_watcher(
+        classifier, mode=PublishMode.AUTONOMOUS,
+        clock_regions=ClockRegions(left=CLOCK_LEFT_BOX, right=CLOCK_RIGHT_BOX),
+    )
+    rng = random.Random(4)
+
+    frame = _blank_board_image()
+    _place_tile(frame, 7, 7, "A", rng)
+    _place_tile(frame, 7, 8, "N", rng)
+    stuck_frame = _with_clock_margin(frame, active_side="left")  # clock never switches
+
+    final = None
+    for _ in range(20):
+        event = watcher.observe_board_frame(stuck_frame.copy(), player_id="p1")
+        if event.scored_move is not None:
+            final = event
+            break
+    assert final is not None, (
+        "must fall back to committing after CLOCK_FALLBACK_OBSERVATIONS even if the clock never switches"
     )
 
 

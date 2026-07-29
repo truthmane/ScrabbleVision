@@ -18,10 +18,12 @@ from typing import List, Optional, Tuple, Union
 import numpy as np
 
 from autoscorer.perception.calibration.homography import BoardCalibration, calibrate_from_corners
+from autoscorer.perception.clock.clock_reader import ClockRegions
 from autoscorer.perception.occupancy.detector import DEFAULT_DIFF_THRESHOLD, DEFAULT_GRADIENT_THRESHOLD
 from autoscorer.perception.stillness.detector import DEFAULT_MOTION_THRESHOLD, DEFAULT_STILL_FRAME_COUNT
 
 Corner = Tuple[float, float]
+ClockBox = Tuple[int, int, int, int]
 
 DEFAULT_VENUES_DIR = Path(__file__).resolve().parents[3] / "configs" / "venues"
 
@@ -96,9 +98,30 @@ class VenueProfile:
     tournament's actual dictionary. `None` (the default) means "use
     whatever `load_lexicon` falls back to" (the vendored generic list),
     not "no lexicon" -- the decoder always has one to rank against."""
+    clock_regions: Optional[Tuple[ClockBox, ClockBox]] = None
+    """(left_box, right_box) pixel bounds of this venue's two on-screen
+    chess-clock displays in the RAW (unrectified) camera frame -- see
+    `perception.clock.clock_reader`'s module docstring for why this
+    exists: board-pixel stillness alone cannot distinguish "player
+    finished their move" from "player is mid-word and just paused,"
+    which real broadcast footage showed fragmenting real multi-tile
+    words into several wrong partial-word candidates an operator had to
+    manually reject. `None` (the default) means this venue has no clock
+    configured yet -- `GameWatcher` falls back to stillness-only timing
+    exactly as before this existed, so this is a strictly opt-in,
+    backward-compatible addition. Screen-position labels only ("left"/
+    "right"), never tied to a specific named player -- this venue always
+    renders one player on each side, and `GameWatcher` only needs to know
+    whether the active side changed, not which named player is which."""
 
     def calibration(self) -> BoardCalibration:
         return calibrate_from_corners(self.corners)
+
+    def clock_regions_obj(self) -> Optional[ClockRegions]:
+        if self.clock_regions is None:
+            return None
+        left, right = self.clock_regions
+        return ClockRegions(left=tuple(left), right=tuple(right))
 
     def effective_still_frame_count(self, sample_fps: float) -> int:
         """The frame count `GameWatcher`'s stillness gate should actually
@@ -147,6 +170,10 @@ class VenueProfile:
             "additional_reference_board_paths": list(self.additional_reference_board_paths),
             "notes": self.notes,
             "lexicon": self.lexicon,
+            "clock_regions": (
+                [list(self.clock_regions[0]), list(self.clock_regions[1])]
+                if self.clock_regions is not None else None
+            ),
         }
 
     @staticmethod
@@ -166,6 +193,10 @@ class VenueProfile:
             additional_reference_board_paths=tuple(data.get("additional_reference_board_paths", [])),
             notes=data.get("notes", ""),
             lexicon=data.get("lexicon"),
+            clock_regions=(
+                (tuple(data["clock_regions"][0]), tuple(data["clock_regions"][1]))
+                if data.get("clock_regions") is not None else None
+            ),
         )
 
 

@@ -122,6 +122,11 @@ from autoscorer.gamelogic.scoring.rules_engine import score_move
 from autoscorer.perception.board_reader import read_new_cells_voted, read_rack, rack_observations_to_tiles
 from autoscorer.perception.calibration.homography import BoardCalibration, cell_bounds, crop_cell, crop_cell_inset
 from autoscorer.perception.classify.blank_heuristic import looks_smooth_like_a_blank
+from autoscorer.perception.clock.clock_reader import (
+    ClockRegions,
+    DEFAULT_RED_DOMINANCE_THRESHOLD,
+    detect_active_side,
+)
 from autoscorer.perception.occupancy.adaptive import AdaptiveOccupancyTracker
 from autoscorer.perception.occupancy.detector import (
     DEFAULT_DIFF_THRESHOLD,
@@ -247,6 +252,20 @@ by `_attempt_commit` and matched in `observe_board_frame` to pick
 `BLANK_QUARANTINE_TTL_OBSERVATIONS` over the generic TTL -- kept as one
 constant so the two can never silently drift apart."""
 
+CLOCK_FALLBACK_OBSERVATIONS = 40
+"""If a ready cluster sits blocked on the clock-boundary gate (see
+`perception.clock.clock_reader`) for this many consecutive observations,
+`observe_board_frame` attempts it anyway, exactly as if no clock were
+configured. This bounds the worst case of a misconfigured or broken clock
+region (wrong pixel coordinates for a differently-cropped stream, an
+overlay redesign) at "no worse than stillness-only timing eventually,"
+rather than a silent, permanent stall with nothing in the operator UI to
+show for it and no diagnostic signal. Deliberately generous -- comfortably
+longer than any real gap between a player physically pressing their clock
+and the broadcast reflecting it, which is the actual cost of trusting the
+clock signal fully -- so this should essentially never fire against a
+correctly-configured venue."""
+
 SOFT_CELL_MIN_CONFIDENCE = 0.7
 """A SOFT cell (see `read_new_cells_voted`) is only usable as an
 in-line extension of a HARD run if its own temporal-voted top label also
@@ -302,6 +321,8 @@ class GameWatcher:
         adaptive_reference: bool = True,
         lexicon: Optional[Lexicon] = None,
         adaptive_occupancy_tracker: Optional[AdaptiveOccupancyTracker] = None,
+        clock_regions: Optional[ClockRegions] = None,
+        clock_red_dominance_threshold: float = DEFAULT_RED_DOMINANCE_THRESHOLD,
     ) -> None:
         """`adaptive_occupancy_tracker`, if given, applies per-cell
         hysteresis and adaptive statistical thresholding (WS3 items 3-4,
@@ -321,7 +342,19 @@ class GameWatcher:
         substitute a reading (phonies are legal, scoring plays), only
         prefer one pool-feasible candidate over another when the words
         it forms are real. `None` (the default) decodes by pool
-        feasibility and confidence alone, same as before this existed."""
+        feasibility and confidence alone, same as before this existed.
+
+        `clock_regions`, if given, gates every commit attempt behind an
+        independent, authoritative turn-boundary signal -- the on-screen
+        chess clock's active side actually switching -- rather than board
+        stillness alone (see `perception.clock.clock_reader`'s module
+        docstring for why board pixels alone cannot tell "the player
+        finished their move" apart from "the player is mid-word and just
+        paused," which real footage showed fragmenting genuine multi-tile
+        words into several wrong partial candidates). `None` (the
+        default, and every venue profile saved before this existed) means
+        this venue has no clock configured -- behavior is then
+        byte-for-byte identical to before this existed."""
         if session is None and publish_gateway is None:
             raise ValueError(
                 "GameWatcher needs either publish_gateway (standalone mode) or "
@@ -364,6 +397,26 @@ class GameWatcher:
         self.occupancy_diff_threshold = occupancy_diff_threshold
         self.occupancy_gradient_threshold = occupancy_gradient_threshold
         self.lexicon = lexicon
+        self._clock_regions = clock_regions
+        self._clock_red_dominance_threshold = clock_red_dominance_threshold
+        self._active_clock_side: Optional[str] = None
+        """Whichever side (`"left"`/`"right"`) most recently read as
+        active -- sticky across frames where `detect_active_side` returns
+        `None` (no new information), so a single ambiguous/transition
+        frame can never itself count as a switch."""
+        self._clock_side_at_turn_start: Optional[str] = None
+        """The active side observed as of the last time `turn_number`
+        changed (a move was genuinely applied, whether by this watcher's
+        own auto-publish or an operator approving/typing one in via the
+        session) -- the baseline a commit attempt must differ from to
+        prove the CURRENT turn has actually ended. Deliberately re-baselined
+        off `turn_number`, not off a successful `_attempt_commit` call,
+        because a REJECTED pending candidate must not require ANOTHER
+        real clock switch before a different candidate for the same
+        still-open turn can be tried -- only a genuinely applied move
+        means a new turn (and thus a new baseline) has truly begun."""
+        self._turn_number_at_last_clock_baseline: int = -1
+        self._observations_since_clock_blocked: int = 0
 
         self._board = BoardState()
         self._racks: Dict[str, List[Tile]] = {}
@@ -534,6 +587,37 @@ class GameWatcher:
         """
         self._frame_buffer.push(frame)
 
+        # Clock tracking runs on EVERY frame, independent of the board's
+        # own stillness gate below -- the active side can (and often
+        # does) switch while the board is mid-motion (a hand still
+        # reaching for the clock), and waiting for board stillness first
+        # would just reintroduce the exact lag this feature exists to
+        # remove. Re-baselined off `turn_number`, not off any commit
+        # attempt -- see `_clock_side_at_turn_start`'s docstring.
+        if self._clock_regions is not None:
+            detected_side = detect_active_side(frame, self._clock_regions, self._clock_red_dominance_threshold)
+            if detected_side is not None:
+                self._active_clock_side = detected_side
+            if self.turn_number != self._turn_number_at_last_clock_baseline:
+                # A turn just changed -- invalidate the baseline rather
+                # than capturing it from THIS exact frame, which may
+                # itself have no reliable reading yet (a transition
+                # frame, a brief encoding artifact). Re-baselining is
+                # retried below on every frame until a real reading
+                # actually arrives, instead of permanently locking onto
+                # whatever `_active_clock_side` happened to be (possibly
+                # still `None`) at the single instant `turn_number` ticked
+                # over -- found live-testing this exact feature: a `None`
+                # baseline captured at that instant satisfies
+                # `turn_boundary_confirmed` immediately and permanently
+                # (`side is not None and side != None` is trivially True
+                # for any detected side), silently defeating the entire
+                # gate for that whole turn.
+                self._turn_number_at_last_clock_baseline = self.turn_number
+                self._clock_side_at_turn_start = None
+            if self._clock_side_at_turn_start is None and self._active_clock_side is not None:
+                self._clock_side_at_turn_start = self._active_clock_side
+
         window = self._frame_buffer.stable_window()
         if window is None:
             moving = self._frame_buffer.last_pair_still is False
@@ -640,10 +724,37 @@ class GameWatcher:
         # subset) to detect "this cluster is still growing, wait"; the
         # latter has already had its chance and shouldn't keep blocking.
         clusterable_cells = current_cells - frozenset(self._quarantined)
-        ready_clusters = [
+        geometrically_ready_clusters = [
             cluster for cluster in _cluster_cells(clusterable_cells, self.board)
             if cluster and cluster <= considerable_confirmed
         ]
+
+        # The clock gate: a geometrically-ready cluster is only actually
+        # attempted once the active clock side has switched away from
+        # whichever side was active when the current turn began -- proof
+        # the mover genuinely finished, not just paused between tiles
+        # long enough to look done. `turn_boundary_confirmed` is
+        # vacuously True whenever this venue has no clock configured
+        # (`_clock_regions is None`), so every existing test and venue
+        # profile without one sees byte-for-byte the same behavior as
+        # before this gate existed.
+        turn_boundary_confirmed = (
+            self._clock_regions is None
+            or (self._active_clock_side is not None and self._active_clock_side != self._clock_side_at_turn_start)
+        )
+        clock_blocked = (
+            self._clock_regions is not None
+            and not turn_boundary_confirmed
+            and bool(geometrically_ready_clusters)
+        )
+        if clock_blocked:
+            self._observations_since_clock_blocked += 1
+        else:
+            self._observations_since_clock_blocked = 0
+        clock_fallback = self._observations_since_clock_blocked >= CLOCK_FALLBACK_OBSERVATIONS
+        ready_clusters = (
+            geometrically_ready_clusters if (turn_boundary_confirmed or clock_fallback) else []
+        )
 
         # A cluster that's only this small BECAUSE a quarantined neighbor
         # was cut out of it is not the same situation as a cluster that's

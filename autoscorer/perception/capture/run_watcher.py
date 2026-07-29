@@ -182,6 +182,7 @@ def run_watcher_on_video(
             occupancy_diff_threshold=profile.occupancy_diff_threshold,
             occupancy_gradient_threshold=profile.occupancy_gradient_threshold,
             lexicon=lexicon,
+            clock_regions=profile.clock_regions_obj(),
         )
         if session is not None:
             watcher = GameWatcher(session=session, **watcher_kwargs)
