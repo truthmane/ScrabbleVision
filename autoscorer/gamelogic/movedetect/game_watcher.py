@@ -266,6 +266,48 @@ and the broadcast reflecting it, which is the actual cost of trusting the
 clock signal fully -- so this should essentially never fire against a
 correctly-configured venue."""
 
+OCCUPANCY_VOTE_WINDOW_FRAMES = 5
+"""How many TRAILING frames of the settled `stable_window()` actually get
+voted on for per-cell occupancy (`read_new_cells_voted`) -- deliberately
+decoupled from `still_frame_count`/`still_seconds`, which governs a
+completely different question (how long the board must show no
+FRAME-TO-FRAME motion before it's trusted as settled at all).
+
+Found live-testing this project's clock-based turn detection against a
+real broadcast: WESPA's real venue profile calibrates a 25-second
+(50-frame) stillness window, and voting across the FULL window (as this
+code did before this constant existed) means a genuinely, fully complete
+real word (WESPA "HUIA") took up to 25 real seconds to reach unanimous
+per-cell support after being completely, visibly placed -- not from
+noise, but from an inherent property of a sliding window: the coarse,
+whole-frame `frame_motion_score` stillness check is not sensitive to a
+slow, careful hand placing one tile at a time (a small, smooth, localized
+change), so the actual moment of placement sits invisibly somewhere
+INSIDE the 50-frame window rather than resetting it. Per-cell vote counts
+then climb in a perfectly smooth, linear ramp (measured: 16 to 50 over
+~35 real observations) purely as the window slides forward and evicts
+its oldest, pre-placement frames one at a time -- and since different
+letters of the same word are placed a few real seconds apart, their
+ramps are correspondingly offset, so the earliest-placed letter reaches
+HARD tier long before the rest, exactly the single-cell/partial-word
+fragmentation this project kept finding.
+
+Voting only needs enough trailing frames to average away a genuinely
+transient single-frame noise event (a hand hovering, a compression
+artifact) -- it was never meant to span the ENTIRE stillness-confirmation
+period, that coupling was incidental (both happened to reuse the same
+`stable_window()` return value). By the time the overall stillness gate
+first confirms the board is settled, the most recent
+`OCCUPANCY_VOTE_WINDOW_FRAMES` frames are guaranteed to already be on the
+far side of any real transition (whatever caused the board to still be
+"moving" enough to delay settlement in the first place happened further
+back in the window) -- voting only over those recovers this project's
+original, already-validated small-window unanimity behavior regardless
+of how long `still_frame_count` itself has grown for a given venue.
+Matches the value this project's `_hard_vote_tolerance`/
+`_soft_vote_tolerance` (see `board_reader.py`) were tuned and tested
+against, so the two fixes compose rather than fight each other."""
+
 SOFT_CELL_MIN_CONFIDENCE = 0.7
 """A SOFT cell (see `read_new_cells_voted`) is only usable as an
 in-line extension of a HARD run if its own temporal-voted top label also
@@ -628,8 +670,12 @@ class GameWatcher:
         self._observation_index += 1
         self._expire_quarantine()
 
+        # Vote only over the TRAILING slice, not the whole (potentially
+        # much longer) stillness window -- see OCCUPANCY_VOTE_WINDOW_FRAMES's
+        # docstring for the real bug this avoids.
+        vote_window = window[-OCCUPANCY_VOTE_WINDOW_FRAMES:]
         candidates = read_new_cells_voted(
-            window, self.calibration, self.reference_board, self.classifier, self.board,
+            vote_window, self.calibration, self.reference_board, self.classifier, self.board,
             top_k=len(self.classifier.classes),
             diff_threshold=self.occupancy_diff_threshold,
             gradient_threshold=self.occupancy_gradient_threshold,

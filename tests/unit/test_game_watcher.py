@@ -63,6 +63,7 @@ def _train_tiny_classifier(tmp_path, labels=("A", "N", "T", "BLANK")):
 
 def _make_watcher(
     classifier, mode=PublishMode.AUTONOMOUS, confidence_threshold=0.9, rack_detector=None, clock_regions=None,
+    still_frame_count=3,
 ):
     gateway = PublishGateway(mode=mode, confidence_threshold=confidence_threshold)
     return GameWatcher(
@@ -71,7 +72,7 @@ def _make_watcher(
         classifier=classifier,
         publish_gateway=gateway,
         rack_detector=rack_detector,
-        still_frame_count=3,
+        still_frame_count=still_frame_count,
         clock_regions=clock_regions,
     )
 
@@ -696,6 +697,63 @@ def test_clock_that_never_switches_eventually_falls_back_to_committing_anyway(tm
     assert final is not None, (
         "must fall back to committing after CLOCK_FALLBACK_OBSERVATIONS even if the clock never switches"
     )
+
+
+def test_a_long_stillness_window_does_not_delay_detection_via_the_trailing_vote_slice(tmp_path):
+    """Regression test for a real bug found live-testing this project's
+    clock-based turn detection against a real broadcast: WESPA's real
+    venue profile calibrates a 25-second (50-frame) stillness window.
+    Before `OCCUPANCY_VOTE_WINDOW_FRAMES` existed, `read_new_cells_voted`
+    was handed the ENTIRE settled window to vote across, and a genuinely
+    complete, fully-placed real word (WESPA "HUIA") took up to 25 real
+    seconds to reach unanimous per-cell support after being placed -- not
+    from noise, but because the coarse whole-frame stillness check isn't
+    sensitive to a single tile's appearance (confirmed by this same
+    file's own `test_stays_idle_while_frames_keep_moving`: a single-tile
+    change alone does not cross the default motion threshold), so the
+    real moment of placement sits invisibly somewhere INSIDE the settled
+    window rather than resetting its accumulation. Per-cell votes then
+    only reach unanimity once the window slides far enough, one frame at
+    a time, to evict every pre-placement frame -- exactly the fragmented,
+    partial-word candidates (a single early-placed letter, over and over)
+    this project kept finding on real footage. Voting over only the
+    trailing `OCCUPANCY_VOTE_WINDOW_FRAMES` frames instead means a
+    genuinely complete placement is detected within a handful of
+    observations regardless of how long the overall stillness window is.
+    """
+    classifier = _train_tiny_classifier(tmp_path)
+    watcher = _make_watcher(classifier, mode=PublishMode.AUTONOMOUS, still_frame_count=50)
+    rng = random.Random(23)
+
+    empty = _blank_board_image()
+    placed = _blank_board_image()
+    _place_tile(placed, 7, 7, "A", rng)
+
+    # Fill the 50-frame buffer mostly with "before" frames -- a single
+    # tile's appearance doesn't itself register as real motion (see the
+    # docstring above), so this transition doesn't reset the stillness
+    # accumulation, exactly reproducing the real broadcast's behavior.
+    for _ in range(45):
+        watcher.observe_board_frame(empty.copy(), player_id="p1")
+
+    # Only a handful of "after" frames -- nowhere near the full 50 needed
+    # to flush every pre-placement frame out of the window. Stop at the
+    # first genuine detection rather than overshooting the loop -- once
+    # applied, later observations of the same now-already-committed board
+    # correctly report nothing new (scored_move=None), which isn't what
+    # this test is checking.
+    final = None
+    for _ in range(10):
+        event = watcher.observe_board_frame(placed.copy(), player_id="p1")
+        if event.scored_move is not None:
+            final = event
+            break
+
+    assert final is not None and final.state == WatcherState.APPLIED, (
+        "a genuinely complete placement must be detected within a handful of observations, not have "
+        "to wait for the entire 50-frame stillness window to fill with post-placement frames"
+    )
+    assert final.scored_move.candidate.new_cells == ((7, 7),)
 
 
 def test_truncated_candidate_never_auto_publishes_even_at_high_confidence(tmp_path):

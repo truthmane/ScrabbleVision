@@ -35,6 +35,41 @@ from autoscorer.perception.occupancy.detector import (
 )
 from training.classify.infer import TileClassifierModel
 
+# Every 25 frames in a stable window, tolerate one more dissenting
+# (wrong-way) vote before falling out of a support tier -- capped at 2 for
+# HARD (0 below 25 frames, 1 at 25-49, 2 at 50+) and always one more than
+# HARD's for SOFT (0 below 25 frames --> soft tolerance 1, matching the
+# original "all but one" design exactly). See `read_new_cells_voted`'s
+# docstring for the real measured bug this fixes: with the ORIGINAL,
+# window-size-blind "votes == num_frames" HARD requirement, a genuinely
+# placed, stably-sitting real tile (WESPA "HUIA", live-tested against the
+# real Game 1 broadcast) sat fully visible on the board -- diff scores 50
+# to 90 against a 38.0 threshold, unambiguous -- for over 40 real seconds
+# without EVER registering as HARD, because the venue's real 25-second
+# (50-frame) stillness window only needs ONE of those 50 frames to dip
+# below threshold (ordinary compression noise, not a real occupancy
+# change) to break perfect unanimity. The exact same absolute-noise-rate
+# reasoning that motivated the original SOFT tier ("all but one frame") at
+# small windows applies at any window size -- it just needs to scale with
+# window size instead of staying frozen at "exactly one frame, ever," or
+# larger windows become steadily MORE fragile to occupancy false-negatives
+# even though real per-frame noise doesn't get any worse as the window
+# grows. Deliberately small and capped, not a large or unbounded fraction:
+# the original tuning already measured that a bare majority is far too
+# loose (real spurious detections went UP, not down), so this widens the
+# unanimity-adjacent band only enough to absorb genuinely occasional
+# single-frame noise, never approaching "most of the window agrees."
+_HARD_VOTE_TOLERANCE_CAP = 2
+_TOLERANCE_GRANULARITY_FRAMES = 25
+
+
+def _hard_vote_tolerance(num_frames: int) -> int:
+    return min(_HARD_VOTE_TOLERANCE_CAP, num_frames // _TOLERANCE_GRANULARITY_FRAMES)
+
+
+def _soft_vote_tolerance(num_frames: int) -> int:
+    return _hard_vote_tolerance(num_frames) + 1
+
 
 @dataclass(frozen=True)
 class CellObservation:
@@ -148,22 +183,34 @@ def read_new_cells_voted(
     plan's move-detection state machine) is responsible for guaranteeing.
 
     Each cell gets a **support tier** from its vote count across the
-    window rather than a hard unanimous AND: `votes == len(raw_frames)` is
-    HARD (identical to the original all-frames-agree behaviour -- see
-    `CellCandidates.is_soft`, False here); a strict MAJORITY of frames
-    (more than half, not merely "at least one") is SOFT (`is_soft=True`);
-    anything weaker is treated as no signal at all, same as before tiers
-    existed. Unanimity was added because a hand hovering
+    window rather than a hard unanimous AND: `votes >= num_frames -
+    _hard_vote_tolerance(num_frames)` is HARD (`CellCandidates.is_soft`
+    False); `votes >= num_frames - _soft_vote_tolerance(num_frames)` (and
+    below HARD's cutoff) is SOFT (`is_soft=True`); anything weaker is
+    treated as no signal at all, same as before tiers existed. Unanimity
+    was originally exact (`votes == num_frames`) because a hand hovering
     near (not over) the board can be too small a change for the coarse
     whole-frame stillness gate to reject, yet still nudge one frame's diff
     score for a specific cell across the occupancy threshold -- checking
     only the first frame treated that one noisy frame as ground truth for
     the whole window, and requiring unanimous agreement fixed it. But real
-    full-game footage also showed the opposite failure: a genuine tile
-    (WESPA "RAGBOLT"'s final T) crossed the occupancy threshold in *some*
-    frames of its window but not all (diff 38.96 against a 38.0
-    threshold, a bare margin), so a hard AND silently dropped a real tile
-    rather than just noise.
+    full-game footage also showed the opposite failure twice, at two very
+    different window sizes: a genuine tile (WESPA "RAGBOLT"'s final T)
+    crossed the occupancy threshold in *some* frames of its 5-frame window
+    but not all (diff 38.96 against a 38.0 threshold, a bare margin) --
+    fixed by adding the SOFT tier below. Then, much later, at this
+    venue's REAL 50-frame (25-second) window size, an entire genuinely-
+    placed word (WESPA "HUIA") sat fully, unambiguously visible (diff 50
+    to 90 against the same 38.0 threshold) for over 40 real seconds
+    without EVER reaching HARD, because exact unanimity across 50 frames
+    only needs ONE of them to dip from ordinary compression noise -- the
+    same absolute per-frame noise rate as the 5-frame case, but with 10x
+    more chances to hit it. `_hard_vote_tolerance`/`_soft_vote_tolerance`
+    fix this by scaling the tolerated dissenting-frame count with window
+    size (capped small, and exactly zero below 25 frames -- see their own
+    docstring for why this reproduces every prior small-window result
+    byte-for-byte while finally giving long windows the same real-world
+    robustness).
 
     **A SOFT cell is only ever surfaced if it's orthogonally adjacent to a
     HARD cell in this same window** (not "anywhere `votes > 0` on the
@@ -207,28 +254,30 @@ def read_new_cells_voted(
         for coord in per_frame_occupancy[0]
     }
 
+    hard_min_votes = num_frames - _hard_vote_tolerance(num_frames)
     hard_cells = {
         (row, col)
         for row in range(BOARD_SIZE)
         for col in range(BOARD_SIZE)
-        if votes[(row, col)] == num_frames and board_before.is_empty((row, col))
+        if votes[(row, col)] >= hard_min_votes and board_before.is_empty((row, col))
     }
-    # SOFT requires ALL BUT ONE frame to agree, not merely a bare
-    # majority -- a real-video run found the earlier any-vote-at-all bar
-    # let a single sporadic frame (ordinary compression/lighting noise,
-    # not a real tile) qualify a neighbor as extension material, and
-    # since `GameWatcher` ranks a soft-extended candidate by cell count
-    # first (longer wins -- see its docstring on why), a persistent
+    # SOFT requires ALL BUT (tolerance + 1) frames to agree, not merely a
+    # bare majority -- a real-video run found the earlier any-vote-at-all
+    # bar let a single sporadic frame (ordinary compression/lighting
+    # noise, not a real tile) qualify a neighbor as extension material,
+    # and since `GameWatcher` ranks a soft-extended candidate by cell
+    # count first (longer wins -- see its docstring on why), a persistent
     # noisy neighbor next to a real placement could win the ranking on
     # *every* observation, not just once. A bare majority (e.g. 3 of 5)
     # measurably still let too much noise through on the real broadcast
     # (more spurious detections, not fewer, in a full-game comparison);
-    # requiring all but one frame pushes this to "missed unanimity by
-    # the narrowest possible margin" -- exactly the real RAGBOLT case
-    # (diff 38.96 against a 38.0 threshold, a bare miss in what was
-    # otherwise a clean read) -- while still excluding a cell that only
-    # showed up in a minority of frames.
-    soft_min_votes = max(1, num_frames - 1)
+    # requiring all but one frame (at the original 5-frame window size --
+    # see `_soft_vote_tolerance`) pushes this to "missed unanimity by the
+    # narrowest possible margin" -- exactly the real RAGBOLT case (diff
+    # 38.96 against a 38.0 threshold, a bare miss in what was otherwise a
+    # clean read) -- while still excluding a cell that only showed up in
+    # a minority of frames.
+    soft_min_votes = max(1, num_frames - _soft_vote_tolerance(num_frames))
     soft_neighbors = set()
     for row, col in hard_cells:
         for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
@@ -236,7 +285,7 @@ def read_new_cells_voted(
             if (
                 0 <= neighbor[0] < BOARD_SIZE and 0 <= neighbor[1] < BOARD_SIZE
                 and neighbor not in hard_cells
-                and soft_min_votes <= votes[neighbor] < num_frames
+                and soft_min_votes <= votes[neighbor] < hard_min_votes
                 and board_before.is_empty(neighbor)
             ):
                 soft_neighbors.add(neighbor)
@@ -263,7 +312,7 @@ def read_new_cells_voted(
     for i, coord in enumerate(new_cells):
         per_frame_candidates = all_candidates[i * num_frames:(i + 1) * num_frames]
         voted = temporal_vote(per_frame_candidates)[:top_k]
-        results.append(CellCandidates(coord=coord, candidates=voted, is_soft=votes[coord] < num_frames))
+        results.append(CellCandidates(coord=coord, candidates=voted, is_soft=votes[coord] < hard_min_votes))
     return results
 
 

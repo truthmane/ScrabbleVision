@@ -14,6 +14,8 @@ from autoscorer.perception.board_reader import (
     read_rack,
     CellObservation,
     RackTileObservation,
+    _hard_vote_tolerance,
+    _soft_vote_tolerance,
 )
 from autoscorer.perception.calibration.homography import CANONICAL_SIZE, BoardCalibration, cell_bounds
 from training.classify.infer import TileClassifierModel
@@ -267,6 +269,106 @@ def test_read_new_cells_voted_tiers_partial_occupancy_agreement_as_soft(tmp_path
     )
     assert by_coord[(4, 0)].is_soft is False, "unanimous across the whole window is HARD, same as before tiers existed"
     assert by_coord[(4, 1)].is_soft is True, "partial agreement adjacent to a HARD cell is SOFT, not silently dropped"
+
+
+def test_vote_tolerance_matches_original_exact_unanimity_below_25_frames():
+    """Every window size this project has ever actually tuned/tested
+    against (5 frames at NASPA's 0.2fps calibration, this file's own
+    5-frame tests) must see EXACTLY the original, validated behavior --
+    the tolerance widening only ever kicks in for windows longer than any
+    of those."""
+    for n in (1, 2, 5, 10, 24):
+        assert _hard_vote_tolerance(n) == 0, f"n={n}"
+        assert _soft_vote_tolerance(n) == 1, f"n={n}"
+
+
+def test_vote_tolerance_scales_with_window_size_but_stays_capped():
+    """Regression test for the real bug: WESPA's actual 50-frame (25-
+    second) stillness window needs real slack, but it must stay small and
+    bounded, never approaching a majority (the original tuning already
+    measured a bare majority lets through more noise, not less)."""
+    assert _hard_vote_tolerance(25) == 1
+    assert _hard_vote_tolerance(49) == 1
+    assert _hard_vote_tolerance(50) == 2
+    assert _hard_vote_tolerance(1000) == 2, "capped -- never grows unboundedly with window size"
+    assert _soft_vote_tolerance(50) == 3
+
+
+def test_read_new_cells_voted_tolerates_a_couple_dissenting_frames_in_a_long_window(tmp_path):
+    """Regression test for a real bug found live-testing this project's
+    clock-based turn detection against the real WESPA broadcast: the real
+    venue profile calibrates a 25-second (50-frame) stillness window, and
+    at that size, the original design (requiring literally every frame to
+    agree) let a single ordinary-noise frame out of 50 permanently keep a
+    genuinely, stably placed tile out of HARD tier. In the real incident,
+    an entire real word (WESPA "HUIA") sat fully visible on the board for
+    over 40 real seconds without the system ever seeing it as occupied at
+    all, because at least one of the 50 frames always happened to dip
+    below threshold from ordinary compression noise -- not because
+    anything about the board was actually changing.
+    """
+    classifier = _train_tiny_classifier(tmp_path)
+    reference = _blank_board_image()
+    board_before = BoardState()
+    rng = random.Random(17)
+
+    num_frames = 50
+    tile_frame = reference.copy()
+    _place_tile(tile_frame, 4, 0, "A", rng)
+    frames = [tile_frame.copy() for _ in range(num_frames)]
+    # 2 of the 50 frames "noisily" revert to the bare reference appearance
+    # -- the same class of noise the original unanimity design was tuned
+    # to absorb, just landing more than once across a much longer window.
+    for i in (10, 30):
+        frames[i] = reference.copy()
+
+    candidates = read_new_cells_voted(frames, IDENTITY_CALIBRATION, reference, classifier, board_before, top_k=2)
+
+    assert len(candidates) == 1
+    cc = candidates[0]
+    assert cc.coord == (4, 0)
+    assert cc.candidates[0][0] == "A"
+    assert cc.is_soft is False, (
+        "a genuinely, stably placed tile with only 2 of 50 frames dissenting must still register HARD"
+    )
+
+
+def test_read_new_cells_voted_still_rejects_too_much_dissent_in_a_long_window(tmp_path):
+    """The flip side of the fix above: tolerance is bounded, not
+    unlimited -- a cell with MORE dissenting frames than the tolerance
+    cap (here 3 of 50, one past the cap of 2) must still fall out of HARD
+    into SOFT, exactly as the original design intended for genuine noise
+    (surfaced here because it's adjacent to a real HARD cell -- see
+    `test_read_new_cells_voted_tiers_partial_occupancy_agreement_as_soft`
+    for why an isolated cell like this would otherwise be invisible)."""
+    classifier = _train_tiny_classifier(tmp_path)
+    reference = _blank_board_image()
+    board_before = BoardState()
+    rng = random.Random(19)
+    num_frames = 50
+
+    frames = []
+    for _ in range(num_frames):
+        frame = reference.copy()
+        _place_tile(frame, 4, 0, "A", rng)
+        frames.append(frame)
+
+    for frame in frames:
+        x1, y1, x2, y2 = cell_bounds(4, 1)
+        shifted = np.clip(frame[y1:y2, x1:x2].astype(np.int16) + 60, 0, 255).astype(np.uint8)
+        frame[y1:y2, x1:x2] = shifted
+    x1, y1, x2, y2 = cell_bounds(4, 1)
+    for i in (5, 20, 40):
+        frames[i][y1:y2, x1:x2] = reference[y1:y2, x1:x2]
+
+    candidates = read_new_cells_voted(frames, IDENTITY_CALIBRATION, reference, classifier, board_before, top_k=2)
+
+    by_coord = {cc.coord: cc for cc in candidates}
+    assert by_coord[(4, 0)].is_soft is False
+    assert (4, 1) in by_coord and by_coord[(4, 1)].is_soft is True, (
+        "3 dissenting frames out of 50 exceeds the HARD tolerance cap of 2 -- must fall to SOFT "
+        "(adjacent to a real HARD cell), not silently stay HARD"
+    )
 
 
 def test_read_new_cells_voted_requires_at_least_one_frame(tmp_path):
