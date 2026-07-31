@@ -52,6 +52,13 @@ class VenueProfile:
     photo (already rectified) **stored locally, never committed to the
     repo** -- same copyright policy as every other real broadcast photo
     this project has touched. `load_reference_board()` reads it back.
+    Store it under `~/.autoscorer/venue_references/`, not a session-scoped
+    scratchpad dir or anywhere inside a git worktree -- both get wiped
+    between sessions (a worktree can be pruned/recreated same as a
+    scratchpad can be cleaned), silently breaking `load_reference_board()`
+    for every venue profile that pointed into one. This actually happened
+    to the WESPA profile's reference photo once; see the "moved there
+    2026-07-31" note in `configs/venues/wespa_word_wars.json`.
 
     `additional_reference_board_paths` covers a real wrinkle a single
     reference photo can't: some venues have more than one genuinely valid

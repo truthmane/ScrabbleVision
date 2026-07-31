@@ -40,6 +40,11 @@ photographed against a plain/dark background; otherwise pick the four corners ma
 See `docs/classifier-accuracy-plan.md`'s Results section and the git history around the first
 data-collection pass for worked examples of both.
 
+If this rectified frame becomes a venue's `reference_board_path` (see `VenueProfile`), save it
+under `~/.autoscorer/venue_references/`, not a session-scoped scratchpad or anywhere inside a git
+worktree -- both get cleaned up between sessions and will silently break
+`load_reference_board()` for that venue until someone notices and regenerates it.
+
 ### 3b. When automated/eyeballed calibration won't converge: `click_calibrate.py`
 
 Some venues defeat every automated corner-detection method — a board that's small on-screen,
