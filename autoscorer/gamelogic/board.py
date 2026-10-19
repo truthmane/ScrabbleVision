@@ -45,8 +45,10 @@ class Tile:
             if not self.is_blank:
                 raise ValueError("only a blank tile may have letter=None (unplayed)")
             return
-        if len(self.letter) != 1 or not self.letter.isalpha():
-            raise ValueError(f"Tile letter must be a single alphabetic character, got {self.letter!r}")
+        # Restricted to ASCII A-Z. str.isalpha() accepts letters such as
+        # "É" (no tile value) and "ß" (upper-cases to "SS").
+        if len(self.letter) != 1 or self.letter.upper() not in LETTER_VALUES:
+            raise ValueError(f"Tile letter must be a single letter A-Z, got {self.letter!r}")
         object.__setattr__(self, "letter", self.letter.upper())
 
     @property
