@@ -137,6 +137,7 @@ def decode_with_lexicon(
     top_labels_per_cell: int = 6,
     lexicon_weight: float = 2.0,
     max_blanks: int = 2,
+    blank_dominance_ratio: float = 2.0,
 ) -> List[Reading]:
     """Best-first list of candidate readings (never empty), most likely
     first. `lexicon=None` or `lexicon_weight=0.0` reduces every lexicon
@@ -157,6 +158,13 @@ def decode_with_lexicon(
     to matter, since `beam_width` may have already pruned away the
     candidate that needed it (all letters look identical on cross-word
     penalty and log-prob alone until the main word is known).
+
+    A blank branch is only explored when BLANK is the cell's top label or
+    its confidence is within `blank_dominance_ratio` of the top letter's.
+    Without this, the lexicon term can turn a confidently read letter into
+    a blank: the blank branch can pick any letter that makes a listed
+    word, so a lexicon-absent real word (QI, ZA under ENABLE) loses to a
+    blank substitution whenever P_blank > P_letter * e^-lexicon_weight.
     """
     if not cell_candidates:
         return [Reading(labels={}, blank_cells=frozenset(), log_prob=0.0, invalid_words=(), all_words_valid=True, total_score=0.0)]
@@ -173,6 +181,7 @@ def decode_with_lexicon(
         coord = cc.coord
         is_last_cell = cc is ordered[-1]
         candidates_here = cc.candidates[:top_labels_per_cell]
+        top_label, top_confidence = max(cc.candidates, key=lambda lc: lc[1])
         next_beam: List[_BeamState] = []
 
         def _finalize(assigned, blank_cells, remaining, log_prob, lexicon_penalty, invalid_words, blanks_used):
@@ -193,6 +202,8 @@ def decode_with_lexicon(
             for label, confidence in candidates_here:
                 if label == CLASSIFIER_BLANK_LABEL:
                     if state.blanks_used >= max_blanks or state.remaining.get(BLANK, 0) <= 0:
+                        continue
+                    if top_label != CLASSIFIER_BLANK_LABEL and confidence * blank_dominance_ratio < top_confidence:
                         continue
                     # The classifier's OWN confidence that this cell is a
                     # blank at all -- NOT a neutral 0. Treating "maybe

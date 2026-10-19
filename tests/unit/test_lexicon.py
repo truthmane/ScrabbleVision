@@ -95,9 +95,55 @@ def test_load_lexicon_via_env_var(monkeypatch, tmp_path):
     assert lexicon.info.is_default is False
 
 
-def test_load_lexicon_raises_for_unknown_name():
+def test_load_lexicon_falls_back_with_a_warning_for_unknown_name(caplog):
+    with caplog.at_level("WARNING"):
+        lexicon = load_lexicon("definitely_does_not_exist_anywhere")
+
+    assert lexicon.name == "enable_2to15"
+    assert lexicon.info.is_default is True
+    assert lexicon.info.requested == "definitely_does_not_exist_anywhere"
+    assert "falling back" in caplog.text
+    assert "definitely_does_not_exist_anywhere" in caplog.text
+    assert "QI" not in lexicon
+
+
+def test_missing_csw_name_falls_back_to_enable_plus_csw_twos(tmp_path, monkeypatch, caplog):
+    import autoscorer.gamelogic.dictionary.lexicon as lexicon_module
+
+    monkeypatch.setattr(lexicon_module, "_LEXICONS_DIR", tmp_path)
+    with caplog.at_level("WARNING"):
+        lexicon = load_lexicon("csw24")
+
+    assert lexicon.name == "enable_2to15+csw_twos"
+    assert lexicon.info.requested == "csw24"
+    for word in ["QI", "ZA", "KI", "OI", "ZO", "ZE", "OK", "EW", "CAT"]:
+        assert word in lexicon
+    assert "csw24" in caplog.text
+
+
+def test_present_csw_file_is_used_instead_of_the_fallback(tmp_path, monkeypatch, caplog):
+    import autoscorer.gamelogic.dictionary.lexicon as lexicon_module
+
+    (tmp_path / "csw24.txt").write_text("QI\nHUIA\nSHOJO\n")
+    monkeypatch.setattr(lexicon_module, "_LEXICONS_DIR", tmp_path)
+    with caplog.at_level("WARNING"):
+        lexicon = load_lexicon("csw24")
+
+    assert lexicon.name == "csw24"
+    assert lexicon.info.is_default is False
+    assert "HUIA" in lexicon
+    assert caplog.text == ""
+
+
+def test_load_lexicon_raises_for_missing_explicit_path(tmp_path):
     with pytest.raises(FileNotFoundError):
-        load_lexicon("definitely_does_not_exist_anywhere")
+        load_lexicon(str(tmp_path / "missing.txt"))
+
+
+def test_wespa_venue_profile_names_a_csw_lexicon():
+    from autoscorer.perception.calibration.venue_profile import load_venue_profile
+
+    assert load_venue_profile("wespa_word_wars").lexicon.lower().startswith("csw")
 
 
 def test_default_lexicon_path_exists_on_disk():

@@ -32,3 +32,16 @@ external file to test and exercise.
 A test (`tests/unit/test_lexicon.py`) asserts the word count and a handful
 of sanity words, so a corrupted or accidentally-swapped file fails loudly
 rather than silently degrading decoding.
+
+# `csw_twos_supplement.txt`
+
+The 2-letter words valid in Collins Scrabble Words (CSW) that ENABLE lacks
+(31 words, including `QI`, `ZA`, `KI`, `OI`, `ZO`, `ZE`, `OK`, `EW`).
+
+- **Source**: the CSW 2-letter word list, which WESPA and national
+  associations publish freely as a player study sheet. A list of 31 short
+  words is a set of facts, not an excerpt of the licensed CSW product.
+- **Use**: `load_lexicon` adds these words to ENABLE only when a CSW lexicon
+  (a name starting with `csw`) was requested and its file isn't present
+  under `configs/lexicons/`. Longer CSW-only words (e.g. `HUIA`, `SHOJO`)
+  still need the licensed list.
