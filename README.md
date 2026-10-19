@@ -90,7 +90,14 @@ covers the separate rack-tile detector.
 pytest
 ```
 
-`tests/slow/` covers full-game scenarios with no external assets needed. A handful of tests need
+`tests/slow/` covers full-game scenarios with no external assets needed. There is no CI, so to run
+the slow tests before every push, install the repo's pre-push hook once per clone:
+
+```bash
+git config core.hooksPath scripts/git-hooks
+```
+
+`git push --no-verify` skips it for one push. A handful of tests need
 a real, uncommitted video asset (gated behind an env var — see `pyproject.toml`'s markers) and are
 skipped otherwise.
 

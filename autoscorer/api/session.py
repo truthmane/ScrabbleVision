@@ -72,6 +72,7 @@ class GameSession:
         confidence: float = 1.0,
         source_frame_jpeg: Optional[bytes] = None,
         check_rejected: bool = True,
+        require_review: bool = False,
     ) -> SubmissionResult:
         """Scores a move and either applies it or queues it for review.
 
@@ -80,6 +81,9 @@ class GameSession:
         the same misreading of an unchanged board. Operator-typed
         submissions turn it off: an operator entering a move is a
         deliberate decision, even if it matches an earlier rejection.
+
+        `require_review=True` always queues the move for review, in every
+        publish mode, including AUTONOMOUS.
         """
         game_state = self.game_state
         if player_id not in game_state.racks:
@@ -158,7 +162,7 @@ class GameSession:
             move_score=result.move_score,
         )
 
-        if self.gateway.should_auto_publish(confidence):
+        if not require_review and self.gateway.should_auto_publish(confidence):
             self._apply(result, board_after, racks_after_map)
             return SubmissionResult(outcome=result, published=True)
 

@@ -453,14 +453,11 @@ def test_when_the_largest_candidate_fails_a_smaller_one_from_the_same_cluster_is
 
 def test_a_persistently_failing_cluster_never_blocks_an_independent_one(tmp_path):
     """Regression test for the quarantine mechanism's real value: a cell
-    that keeps failing (here, a genuine blank tile adjacent to a
-    perfectly fine one -- the two always cluster and always get tried
-    together, so they fail and eventually quarantine together too, since
-    a lone blank has no way to resolve without an operator or a lexicon)
-    must never block an entirely UNRELATED, independently valid
-    placement elsewhere on the board from committing. Also confirms the
-    persistently-failing cell does get quarantined rather than retried
-    forever with no bound.
+    that keeps failing (here, a blank tile in a pair that touches no
+    existing tile, so the placement never validates) must never block an
+    entirely UNRELATED, independently valid placement elsewhere on the
+    board from committing. Also confirms the persistently-failing cell
+    does get quarantined rather than retried forever with no bound.
     """
     classifier = _train_tiny_classifier(tmp_path)
     watcher = _make_watcher(classifier, mode=PublishMode.AUTONOMOUS)
@@ -469,8 +466,8 @@ def test_a_persistently_failing_cluster_never_blocks_an_independent_one(tmp_path
     watcher._board = BoardState({(5, 5): Tile("A"), (10, 10): Tile("A")})
 
     frame = _blank_board_image()
-    _place_tile(frame, 5, 6, "N", rng)  # adjacent to a real blank -- never cleanly resolves
-    _place_tile(frame, 5, 7, None, rng)  # a real blank tile, structurally unresolvable alone
+    _place_tile(frame, 2, 6, "N", rng)  # touches no existing tile -- never validates
+    _place_tile(frame, 2, 7, None, rng)  # a real blank tile in that same invalid pair
     _place_tile(frame, 10, 11, "T", rng)  # entirely independent, cleanly valid placement
 
     applied = None
@@ -485,10 +482,29 @@ def test_a_persistently_failing_cluster_never_blocks_an_independent_one(tmp_path
 
     for _ in range(10):
         event = watcher.observe_board_frame(frame.copy(), player_id="p1")
-        if (5, 7) in watcher._quarantined:
+        if (2, 7) in watcher._quarantined:
             break
 
-    assert (5, 7) in watcher._quarantined, "the persistently-failing blank cell was never quarantined"
+    assert (2, 7) in watcher._quarantined, "the persistently-failing blank cell was never quarantined"
+
+
+def _make_session_watcher_with_anchor(classifier, anchor):
+    """A delegated-mode watcher whose session board already holds `anchor`.
+    Ordinary moves auto-publish; only a forced-operator move (publish
+    confidence 0.0) queues for review."""
+    session = GameSession(mode=PublishMode.AUTONOMOUS_WITH_CONFIDENCE_FALLBACK)
+    session.gateway.confidence_threshold = 0.01
+    session.game_state.board = BoardState(anchor)
+    return session, _make_session_watcher(classifier, session)
+
+
+def _reject_pending_blank_plays(session):
+    """Simulates an operator who rejects every pending move containing a
+    blank (here, a real letter the classifier misreads as BLANK)."""
+    for pending in session.list_pending():
+        candidate = pending.scored_move.candidate
+        if any(pending.board_after.get(coord).is_blank for coord in candidate.new_cells):
+            session.decide(candidate.turn_number, "reject")
 
 
 def test_a_cluster_shrunk_by_quarantine_is_forced_to_operator_review(tmp_path):
@@ -502,24 +518,27 @@ def test_a_cluster_shrunk_by_quarantine_is_forced_to_operator_review(tmp_path):
     perfectly good tiles that formed a valid word (OJO, in the real game)
     on their own once the blank-flagged one was quarantined away -- that
     must never auto-publish, since a real tile is missing from it.
+
+    The whole play with the blank goes to the operator first. The
+    operator rejects it (the blank is really a misread letter), the
+    resubmissions fail, and the blank cell gets quarantined.
     """
     classifier = _train_tiny_classifier(tmp_path)
-    watcher = _make_watcher(classifier, mode=PublishMode.AUTONOMOUS)
+    session, watcher = _make_session_watcher_with_anchor(classifier, {(5, 5): Tile("A")})
     rng = random.Random(11)
-
-    watcher._board = BoardState({(5, 5): Tile("A")})
 
     frame = _blank_board_image()
     _place_tile(frame, 5, 6, "N", rng)
     _place_tile(frame, 5, 7, "T", rng)
-    _place_tile(frame, 5, 8, None, rng)  # a real blank, adjacent only to (5, 7)
+    _place_tile(frame, 5, 8, None, rng)  # reads as a blank, adjacent only to (5, 7)
 
     final = None
     for _ in range(40):
         event = watcher.observe_board_frame(frame.copy(), player_id="p1")
-        if event.scored_move is not None:
+        if event.scored_move is not None and (5, 8) not in event.scored_move.candidate.new_cells:
             final = event
             break
+        _reject_pending_blank_plays(session)
 
     assert final is not None, "the cluster shrunk by quarantine never committed"
     assert set(final.scored_move.candidate.new_cells) == {(5, 6), (5, 7)}, (
@@ -527,7 +546,8 @@ def test_a_cluster_shrunk_by_quarantine_is_forced_to_operator_review(tmp_path):
     )
     assert final.needs_operator is True, "a cluster shrunk by quarantine must still force operator review"
     assert "excluded from this placement" in final.reason
-    assert watcher.board.get((5, 6)) is None and watcher.board.get((5, 7)) is None, (
+    board = session.game_state.board
+    assert board.get((5, 6)) is None and board.get((5, 7)) is None, (
         "a forced-operator candidate must not apply to the board -- only the pre-existing anchor tile should be there"
     )
 
@@ -546,20 +566,19 @@ def test_a_cell_quarantined_for_reading_blank_gets_the_shorter_blank_ttl(tmp_pat
     instead.
     """
     classifier = _train_tiny_classifier(tmp_path)
-    watcher = _make_watcher(classifier, mode=PublishMode.AUTONOMOUS)
+    session, watcher = _make_session_watcher_with_anchor(classifier, {(5, 5): Tile("A")})
     rng = random.Random(11)
-
-    watcher._board = BoardState({(5, 5): Tile("A")})
 
     frame = _blank_board_image()
     _place_tile(frame, 5, 6, "N", rng)
     _place_tile(frame, 5, 7, "T", rng)
-    _place_tile(frame, 5, 8, None, rng)  # a real blank, adjacent only to (5, 7)
+    _place_tile(frame, 5, 8, None, rng)  # reads as a blank, adjacent only to (5, 7)
 
     for _ in range(40):
-        event = watcher.observe_board_frame(frame.copy(), player_id="p1")
-        if event.scored_move is not None:
+        watcher.observe_board_frame(frame.copy(), player_id="p1")
+        if (5, 8) in watcher._quarantined:
             break
+        _reject_pending_blank_plays(session)
 
     assert (5, 8) in watcher._quarantined, "the blank cell should have been quarantined"
     remaining = watcher._quarantined[(5, 8)] - watcher._quarantined_since[(5, 8)]
@@ -567,6 +586,70 @@ def test_a_cell_quarantined_for_reading_blank_gets_the_shorter_blank_ttl(tmp_pat
         "a cell quarantined for reading blank must get the shorter blank-specific TTL, "
         f"not the generic {gw_module.QUARANTINE_TTL_OBSERVATIONS}-observation one"
     )
+
+
+def _two_blank_frame(rng):
+    """N, blank, blank, T to the right of an existing A at (5, 5)."""
+    frame = _blank_board_image()
+    _place_tile(frame, 5, 6, "N", rng)
+    _place_tile(frame, 5, 7, None, rng)
+    _place_tile(frame, 5, 8, None, rng)
+    _place_tile(frame, 5, 9, "T", rng)
+    return frame
+
+
+TWO_BLANK_PLAY_CELLS = {(5, 6), (5, 7), (5, 8), (5, 9)}
+
+
+def test_a_two_blank_play_arrives_as_one_complete_pending_move(tmp_path):
+    """A play with two blanks (like the real WESPA move "PInOTa.E") is
+    offered to the operator as one pending move for the whole play, with
+    the blanks placed as blank tiles. It never auto-publishes, and no
+    fragment of it is offered or committed on its own."""
+    classifier = _train_tiny_classifier(tmp_path)
+    watcher = _make_watcher(classifier, mode=PublishMode.AUTONOMOUS)
+    watcher._board = BoardState({(5, 5): Tile("A")})
+    frame = _two_blank_frame(random.Random(5))
+
+    events = [watcher.observe_board_frame(frame.copy(), player_id="p1") for _ in range(8)]
+
+    offered = [event for event in events if event.scored_move is not None]
+    assert offered, "the two-blank play was never offered to the operator"
+    for event in offered:
+        assert event.needs_operator is True
+        assert set(event.scored_move.candidate.new_cells) == TWO_BLANK_PLAY_CELLS
+        assert event.pending.board_after.get((5, 7)).is_blank
+        assert event.pending.board_after.get((5, 8)).is_blank
+        assert not event.pending.board_after.get((5, 6)).is_blank
+        assert not event.pending.board_after.get((5, 9)).is_blank
+    assert watcher.turn_number == 0
+    assert watcher.board.get((5, 6)) is None
+
+
+def test_a_two_blank_play_never_auto_publishes_in_delegated_autonomous_mode(tmp_path):
+    """Same as above in delegated mode: the session queues the whole play
+    for review even though its gateway auto-publishes everything else."""
+    classifier = _train_tiny_classifier(tmp_path)
+    session = GameSession(mode=PublishMode.AUTONOMOUS)
+    session.game_state.board = BoardState({(5, 5): Tile("A")})
+    watcher = _make_session_watcher(classifier, session)
+    frame = _two_blank_frame(random.Random(5))
+
+    pending = []
+    for _ in range(8):
+        watcher.observe_board_frame(frame.copy(), player_id="p1")
+        pending = session.list_pending()
+        if pending:
+            break
+
+    assert len(pending) == 1, "the two-blank play should be queued once, as a single move"
+    assert set(pending[0].scored_move.candidate.new_cells) == TWO_BLANK_PLAY_CELLS
+    assert session.game_state.history == []
+    assert session.game_state.board.get((5, 6)) is None
+
+    applied = session.decide(pending[0].scored_move.candidate.turn_number, "approve")
+    assert applied is True
+    assert session.game_state.board.get((5, 7)).is_blank
 
 
 def test_commit_is_withheld_until_the_clock_confirms_the_turn_ended(tmp_path):
@@ -891,7 +974,7 @@ def test_watchdog_emits_a_stalled_event_after_repeated_failures(tmp_path, monkey
     rng = random.Random(33)
 
     frame = _blank_board_image()
-    _place_tile(frame, *CENTER, None, rng)  # a lone blank -- structurally unresolvable, first move
+    _place_tile(frame, 3, 3, None, rng)  # a lone blank off center on the first move -- never validates
 
     event = None
     for _ in range(8):

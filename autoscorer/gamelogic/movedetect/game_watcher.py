@@ -972,26 +972,74 @@ class GameWatcher:
 
         blank_coords = tuple(sorted(reading.blank_cells))
         if blank_coords:
-            # Attribute this failure only to the actual blank cell(s), not
-            # every cell in the candidate -- a multi-cell word with one
-            # genuine blank in it (e.g. the real WESPA move "PInOTa.E",
-            # 7 cells/2 blanks) would otherwise quarantine its five
-            # perfectly good letters right alongside the two blanks,
-            # since they all "failed" together as part of the same
-            # candidate. Once only the blanks are quarantined, the
-            # remaining good cells can be re-tried (as their own, smaller
-            # candidates) instead of the whole turn going silent.
+            # A reading with a blank becomes one pending move for the whole
+            # play, with `decode_with_lexicon`'s resolved letters placed as
+            # blank tiles. It always goes to an operator and never
+            # auto-publishes, in any mode: the image carries no evidence of
+            # which letter a blank was played as. Offering the whole play
+            # keeps the operator from seeing only fragments. Previously the
+            # blanks were quarantined and the remaining cells were offered
+            # alone; for the real WESPA move "PInOTa.E" (7 cells, 2 blanks)
+            # that meant a 1-tile play at I14.
             #
-            # `decode_with_lexicon` (unlike the old `decode_feasible_reading`)
-            # already resolves a blank to a specific, pool-feasible, and
-            # (when a lexicon is given) word-consistent letter -- but
-            # this project's structural rule stands regardless: a blank's
-            # played letter is never trusted enough to auto-publish
-            # without an operator confirming it, no matter how the
-            # letter was arrived at. Using the resolved letter to pre-fill
-            # an operator's review UI is a real future improvement, not
-            # done here.
-            return (_BLANK_FAILURE_REASON, blank_coords)
+            # If the play can't be placed, validated, or submitted, the
+            # failure is attributed only to the blank cell(s), so the good
+            # letters around them are not quarantined with them.
+            placements = {
+                coord: Tile(letter=label, is_blank=(coord in reading.blank_cells))
+                for coord, label in decoded.items()
+            }
+            try:
+                board_after = self.board.with_placements(placements)
+            except ValueError:
+                return (_BLANK_FAILURE_REASON, blank_coords)
+            new_cells = list(placements.keys())
+            if not validate_placement(self.board, board_after, new_cells).ok:
+                return (_BLANK_FAILURE_REASON, blank_coords)
+            try:
+                compute_pool_state(board_after, list(self.racks.values()))
+            except PoolInvariantViolation:
+                return (_BLANK_FAILURE_REASON, blank_coords)
+
+            if self.session is not None:
+                result = self.session.submit_move(
+                    player_id,
+                    new_tiles=[(coord, tile.letter, tile.is_blank) for coord, tile in placements.items()],
+                    confidence=move_confidence,
+                    source_frame_jpeg=_encode_frame_jpeg(source_frame),
+                    require_review=True,
+                )
+                if isinstance(result.outcome, MoveProcessingError):
+                    return (_BLANK_FAILURE_REASON, blank_coords)
+                self._confirmed_cells = frozenset()
+                self._last_candidate_cells = frozenset()
+                self.state = WatcherState.SCORED
+                return WatcherEvent(
+                    state=self.state, scored_move=result.outcome, confidence=move_confidence,
+                    needs_operator=True,
+                    pending=self.session.pending.get(result.outcome.candidate.turn_number),
+                    reason=_BLANK_FAILURE_REASON,
+                )
+
+            self._confirmed_cells = frozenset()
+            self._last_candidate_cells = frozenset()
+            words = words_formed(board_after, new_cells)
+            move_candidate = MoveCandidate(
+                turn_number=self._turn_number + 1, player_id=player_id, move_type=MoveType.PLAY,
+                new_cells=tuple(new_cells),
+            )
+            scored_move = ScoredMove(
+                candidate=move_candidate, move_score=score_move(board_after, words, new_cells),
+            )
+            self.state = WatcherState.SCORED
+            return WatcherEvent(
+                state=self.state, scored_move=scored_move, confidence=move_confidence, needs_operator=True,
+                pending=PendingMove(
+                    scored_move=scored_move, board_after=board_after, racks_after={},
+                    confidence=move_confidence, source_frame_jpeg=_encode_frame_jpeg(source_frame),
+                ),
+                reason=_BLANK_FAILURE_REASON,
+            )
 
         placements = {coord: Tile(letter=label, is_blank=False) for coord, label in decoded.items()}
         try:

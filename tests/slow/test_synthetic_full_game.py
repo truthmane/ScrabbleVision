@@ -24,6 +24,12 @@ deployed classifier's real accuracy ceiling without needing real photos.
   real `GameWatcher` logic bug, independent of classifier accuracy --
   Game 1's own move 19 (`PIOTE?? 14B PInOTa.E`, two blanks) is exactly
   this case, since the blank jam fires regardless of confidence.
+- The game runs in delegated mode (`GameSession`, AUTONOMOUS) with a
+  simulated operator that approves a pending move only when it exactly
+  matches the real play, fills in the letters for the blanks of a move that
+  otherwise matches exactly, and rejects everything else. At `p=1.0` every
+  committed play must also match the real play exactly, so a wrong
+  partial commit (for example one tile of a blank play) fails the test.
 - At `p=0.72` (the deployed checkpoint's real measured board-tile
   accuracy), the pipeline is not expected to get every turn right, but it
   must not get permanently STUCK -- this is the never-jam invariant.
@@ -44,9 +50,10 @@ from typing import List, Tuple
 import numpy as np
 import pytest
 
+from autoscorer.api.session import GameSession
 from autoscorer.eval.gcg_truth import TruthTurn, load_truth_turns
 from autoscorer.gamelogic.movedetect.game_watcher import GameWatcher
-from autoscorer.gamelogic.publish import PublishGateway, PublishMode
+from autoscorer.gamelogic.publish import PendingMove, PublishMode
 from autoscorer.perception.calibration.homography import BoardCalibration
 from tests.support.noisy_oracle import NoisyOracleClassifier, build_confusion_distribution
 from tests.support.synth_board import blank_board_image, place_tile
@@ -96,7 +103,50 @@ def _build_registry_and_boards(
     return registry, boards
 
 
-def _run_game(p: float, seed: int) -> Tuple[GameWatcher, List[int]]:
+def _matches(pending: PendingMove, truth: TruthTurn, check_blank_letters: bool) -> bool:
+    """True when a pending move has the real play's cells, the same cells
+    played as blanks, and the real letters on every non-blank cell. Blank
+    letters are compared only when `check_blank_letters` is set."""
+    new_cells = pending.scored_move.candidate.new_cells
+    if frozenset(new_cells) != truth.cells:
+        return False
+    for coord in new_cells:
+        tile = pending.board_after.get(coord)
+        is_blank = coord in truth.blank_cells
+        if tile is None or tile.is_blank != is_blank:
+            return False
+        if (check_blank_letters or not is_blank) and tile.letter != truth.letters[coord]:
+            return False
+    return True
+
+
+def _simulated_operator(session: GameSession, truth: TruthTurn, player: str) -> None:
+    """Reviews every pending move against the real play on the board.
+
+    Approves an exact match. For a move that matches except for the
+    letters chosen for its blanks, rejects it and enters the play with the
+    real blank letters, the way an operator confirms what a blank was
+    played as. Rejects everything else, including any fragment of the
+    real play."""
+    for pending in session.list_pending():
+        turn_number = pending.scored_move.candidate.turn_number
+        if _matches(pending, truth, check_blank_letters=True):
+            session.decide(turn_number, "approve")
+        elif _matches(pending, truth, check_blank_letters=False):
+            session.decide(turn_number, "reject")
+            new_tiles = [
+                (coord, truth.letters[coord], coord in truth.blank_cells) for coord in sorted(truth.cells)
+            ]
+            session.submit_move(player, new_tiles=new_tiles)
+        else:
+            session.decide(turn_number, "reject")
+
+
+def _run_game(p: float, seed: int) -> Tuple[GameSession, List[TruthTurn], List[int]]:
+    """Drives the whole game in delegated mode (`GameSession`), the way a
+    real deployment runs: autonomous publishing, with an operator who
+    reviews every pending move. Returns the session, the truth turns, and
+    how many settled observations each real play used."""
     truth_turns = load_truth_turns(GCG_PATH)
     build_rng = random.Random(42)
     registry, boards = _build_registry_and_boards(truth_turns, build_rng)
@@ -104,46 +154,53 @@ def _run_game(p: float, seed: int) -> Tuple[GameWatcher, List[int]]:
     confusion_dist = build_confusion_distribution(CHECKPOINT_PATH, samples_per_class=15, seed=0)
     oracle = NoisyOracleClassifier(registry, confusion_dist, p=p, rng=random.Random(seed))
 
-    gateway = PublishGateway(mode=PublishMode.AUTONOMOUS)
+    session = GameSession(mode=PublishMode.AUTONOMOUS)
     watcher = GameWatcher(
         calibration=IDENTITY_CALIBRATION,
         reference_board=blank_board_image(),
         classifier=oracle,
-        publish_gateway=gateway,
+        session=session,
         still_frame_count=STILL_FRAME_COUNT,
     )
 
     observations_per_turn: List[int] = []
-    for player, board_image in boards:
+    for truth, (player, board_image) in zip(truth_turns, boards):
         turn_before = watcher.turn_number
         _disrupt(watcher, player, board_image.shape)
         used = 0
         for _ in range(MAX_OBSERVATIONS_PER_TURN):
             watcher.observe_board_frame(board_image.copy(), player_id=player)
+            _simulated_operator(session, truth, player)
             used += 1
             if watcher.turn_number > turn_before:
                 break
         observations_per_turn.append(used)
 
-    return watcher, observations_per_turn
+    return session, truth_turns, observations_per_turn
 
 
 def test_perfect_classification_completes_the_whole_real_game_with_no_jam():
-    watcher, observations_per_turn = _run_game(p=1.0, seed=1)
-    truth_turns = load_truth_turns(GCG_PATH)
+    session, truth_turns, observations_per_turn = _run_game(p=1.0, seed=1)
+    history = session.game_state.history
 
-    assert watcher.turn_number == len(truth_turns), (
-        f"only {watcher.turn_number}/{len(truth_turns)} real plays committed at perfect "
+    assert len(history) == len(truth_turns), (
+        f"only {len(history)}/{len(truth_turns)} real plays committed at perfect "
         f"classification -- any shortfall here is a GameWatcher logic bug, not an accuracy "
         f"ceiling (per-turn observation counts: {observations_per_turn})"
     )
     assert max(observations_per_turn) < MAX_OBSERVATIONS_PER_TURN, (
         "at least one real play never committed within the observation budget -- a jam"
     )
+    board = session.game_state.board
+    for scored_move, truth in zip(history, truth_turns):
+        committed = {coord: board.get(coord).letter for coord in scored_move.candidate.new_cells}
+        assert committed == truth.letters, (
+            f"turn {truth.turn_number} committed {committed}, expected {truth.letters}"
+        )
 
 
 def test_realistic_noise_never_permanently_jams():
-    _, observations_per_turn = _run_game(p=0.72, seed=2)
+    _, _, observations_per_turn = _run_game(p=0.72, seed=2)
 
     stuck_turns = sum(1 for n in observations_per_turn if n >= MAX_OBSERVATIONS_PER_TURN)
     assert stuck_turns == 0, (
