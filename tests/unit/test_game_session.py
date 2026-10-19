@@ -147,3 +147,21 @@ def test_undo_is_refused_while_a_move_is_pending():
     with pytest.raises(PendingMoveExistsError):
         session.undo_last_move()
     assert len(session.game_state.history) == 1
+
+
+def test_turn_number_matches_committed_move_count_after_reject_and_undo():
+    """Regression test: a rejected pending move consumed a turn number, so
+    the first real move after one rejection was numbered turn 2."""
+    session = GameSession(mode=PublishMode.MANUAL)
+    session.submit_move("p1", new_tiles=FIRST_MOVE_TILES)
+    session.decide(turn_number=1, action="reject")
+
+    result = session.submit_move("p1", new_tiles=[((7, 7), "A", False), ((7, 8), "T", False)])
+    assert result.outcome.candidate.turn_number == 1
+    session.decide(turn_number=1, action="approve")
+
+    session.set_mode(PublishMode.AUTONOMOUS)
+    session.submit_move("p2", new_tiles=[((7, 9), "S", False)])
+    session.undo_last_move()
+    redo = session.submit_move("p2", new_tiles=[((7, 9), "E", False)])
+    assert redo.outcome.candidate.turn_number == 2

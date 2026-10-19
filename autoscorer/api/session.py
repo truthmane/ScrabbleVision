@@ -34,7 +34,6 @@ class GameSession:
         self.game_state = GameState()
         self.gateway = PublishGateway(mode=mode)
         self.pending: Dict[int, PendingMove] = {}
-        self._next_turn = 1
         # (player_id, sorted (coord, letter, is_blank) tuples) for every
         # reading an operator has explicitly rejected -- see submit_move's
         # check below for why this exists: without it, a detector that
@@ -74,8 +73,7 @@ class GameSession:
 
         if new_tiles and self._signature(player_id, new_tiles) in self._rejected_signatures:
             # Identical cells + letters + player as something an operator
-            # already rejected -- don't consume a turn number or re-queue
-            # it, since nothing about the input changed and re-offering it
+            # already rejected -- don't re-queue it, since nothing about the input changed and re-offering it
             # is just noise (see the module-level note on
             # `_rejected_signatures`). A caller detecting moves from an
             # unchanging board will keep hitting this until either the
@@ -96,9 +94,8 @@ class GameSession:
                 board_after = board_before.with_placements(placements)
             except ValueError as exc:
                 # An impossible placement (an occupied cell, or an
-                # unplayed blank with no letter) -- don't consume a turn
-                # number, same treatment as a MoveProcessingError below, so
-                # the operator can correct the input and resubmit.
+                # unplayed blank with no letter). The operator can correct
+                # the input and resubmit.
                 return SubmissionResult(outcome=MoveProcessingError(reason=str(exc)), published=False)
         else:
             board_after = board_before
@@ -111,15 +108,14 @@ class GameSession:
             racks_after_map[player_id] = [Tile(letter, is_blank) for (letter, is_blank) in rack_after]
         racks_after = [racks_after_map[p] for p in player_order]
 
-        turn_number = self._next_turn
+        # Derived from the committed history so a rejected or undone move
+        # never leaves a gap. Only one move can be pending at a time (see
+        # the check above), so this is also a unique pending key.
+        turn_number = len(game_state.history) + 1
         result = process_turn(turn_number, player_id, board_before, board_after, racks_before, racks_after)
 
         if isinstance(result, MoveProcessingError):
-            # Validation failed -- don't consume a turn number, let the
-            # operator correct the input and resubmit.
             return SubmissionResult(outcome=result, published=False)
-
-        self._next_turn += 1
 
         # GCG export needs the acting player's rack as it stood before this
         # move (and, for an exchange, exactly which tiles left it) -- data
