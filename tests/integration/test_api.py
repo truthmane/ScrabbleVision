@@ -4,6 +4,7 @@ in-process TestClient (no real network, no camera -- still hermetic).
 """
 import random
 import time
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -279,3 +280,22 @@ def test_manual_submission_is_not_blocked_by_an_earlier_rejection(client):
 
     assert resp.status_code == 200
     assert len(client.get("/pending").json()) == 1
+
+
+def test_watch_marks_itself_running_before_the_thread_starts(client, monkeypatch):
+    """Regression test: run() set watch_status.running inside the new
+    thread, so two quick POST /watch calls could both start a run. The
+    thread is replaced with one that never runs, so only the endpoint
+    itself can have marked the run as in progress."""
+    unstarted_thread = SimpleNamespace(start=lambda: None)
+    monkeypatch.setattr(main_module, "threading", SimpleNamespace(Thread=lambda **kwargs: unstarted_thread))
+    body = {"video_path": "x.mkv", "venue": "v", "player1": "A", "player2": "B"}
+
+    try:
+        first = client.post("/watch", json=body)
+        second = client.post("/watch", json=body)
+    finally:
+        main_module.watch_status.running = False
+
+    assert first.status_code == 200
+    assert second.status_code == 409

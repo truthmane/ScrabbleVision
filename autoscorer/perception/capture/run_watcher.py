@@ -194,10 +194,18 @@ def run_watcher_on_video(
             if max_frames is not None and i >= max_frames:
                 break
             if session is not None:
-                while session.list_pending():
+                # Hold the session lock across the pending check and the
+                # whole observation, so an API call can't change the board
+                # or queue a move partway through.
+                while True:
+                    with session.lock:
+                        if not session.pending:
+                            current_player = _derive_current_player(session, player1_id, player2_id)
+                            event = watcher.observe_board_frame(frame, player_id=current_player)
+                            break
                     time.sleep(0.5)
-                current_player = _derive_current_player(session, player1_id, player2_id)
-            event = watcher.observe_board_frame(frame, player_id=current_player)
+            else:
+                event = watcher.observe_board_frame(frame, player_id=current_player)
 
             if on_frame_event is not None:
                 on_frame_event(i, event)

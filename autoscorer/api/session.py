@@ -5,6 +5,8 @@ with plain function calls -- the web layer is a thin adapter around this.
 """
 from __future__ import annotations
 
+import functools
+import threading
 from collections import Counter
 from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Tuple, Union
@@ -25,6 +27,15 @@ class SubmissionResult:
     published: bool  # True if applied immediately, False if queued for operator review
 
 
+def _locked(method):
+    """Runs `method` while holding the session's lock."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self.lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class PendingMoveExistsError(RuntimeError):
     """Raised by `GameSession.undo_last_move` while a move awaits review."""
 
@@ -34,6 +45,12 @@ class GameSession:
         self.game_state = GameState()
         self.gateway = PublishGateway(mode=mode)
         self.pending: Dict[int, PendingMove] = {}
+        # Guards every read and write of game_state and pending. The /watch
+        # thread and the API event loop both call into this session. A
+        # caller that needs several reads to agree (the watcher's pending
+        # check plus a full frame observation) holds it across all of them.
+        # Reentrant so that caller can still call the methods below.
+        self.lock = threading.RLock()
         # (player_id, sorted (coord, letter, is_blank) tuples) for every
         # reading an operator has explicitly rejected -- see submit_move's
         # check below for why this exists: without it, a detector that
@@ -42,9 +59,11 @@ class GameSession:
         # about the source pixels ever changes on its own.
         self._rejected_signatures: set = set()
 
+    @_locked
     def set_mode(self, mode: PublishMode) -> None:
         self.gateway.mode = mode
 
+    @_locked
     def submit_move(
         self,
         player_id: str,
@@ -149,6 +168,7 @@ class GameSession:
         )
         return SubmissionResult(outcome=result, published=False)
 
+    @_locked
     def decide(self, turn_number: int, action: str) -> Optional[bool]:
         """Approve or reject a pending move.
 
@@ -164,12 +184,17 @@ class GameSession:
         """
         if action not in ("approve", "reject"):
             raise ValueError(f"action must be 'approve' or 'reject', got {action!r}")
-        pending = self.pending.pop(turn_number, None)
+        pending = self.pending.get(turn_number)
         if pending is None:
             return None
         if action == "approve":
+            # Apply before removing from pending. The watcher waits for an
+            # empty pending list, and must not then read the board from
+            # before this move.
             self._apply(pending.scored_move, pending.board_after, pending.racks_after)
+            del self.pending[turn_number]
             return True
+        del self.pending[turn_number]
 
         candidate = pending.scored_move.candidate
         new_tiles = tuple(
@@ -182,6 +207,7 @@ class GameSession:
             self._rejected_signatures.add(self._signature(candidate.player_id, new_tiles))
         return False
 
+    @_locked
     def undo_last_move(self) -> Optional[ScoredMove]:
         """Reverts the most recently committed move -- see
         `GameState.undo_last` for exactly what this can and can't do.
@@ -200,6 +226,7 @@ class GameSession:
             self._rejected_signatures.clear()
         return undone
 
+    @_locked
     def list_pending(self) -> List[PendingMove]:
         return [self.pending[k] for k in sorted(self.pending)]
 

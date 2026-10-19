@@ -141,6 +141,11 @@ def _score_move_to_dict(scored: ScoredMove) -> dict:
     }
 
 
+def _overlay_state() -> dict:
+    with session.lock:
+        return build_overlay_state(session.game_state)
+
+
 # --- routes -------------------------------------------------------------------
 
 @app.post("/moves")
@@ -160,7 +165,7 @@ async def submit_move(submission: MoveSubmission):
         raise HTTPException(status_code=422, detail=result.outcome.reason)
 
     if result.published:
-        await overlay_connections.broadcast(build_overlay_state(session.game_state))
+        await overlay_connections.broadcast(_overlay_state())
 
     return {"published": result.published, "move": _score_move_to_dict(result.outcome)}
 
@@ -203,7 +208,7 @@ async def submit_move_notation(submission: NotationMoveSubmission):
         raise HTTPException(status_code=422, detail=result.outcome.reason)
 
     if result.published:
-        await overlay_connections.broadcast(build_overlay_state(session.game_state))
+        await overlay_connections.broadcast(_overlay_state())
 
     return {"published": result.published, "move": _score_move_to_dict(result.outcome)}
 
@@ -256,7 +261,7 @@ async def decide_pending(turn_number: int, decision: OperatorDecisionRequest):
     if applied is None:
         raise HTTPException(status_code=404, detail=f"no pending move for turn {turn_number}")
     if applied:
-        await overlay_connections.broadcast(build_overlay_state(session.game_state))
+        await overlay_connections.broadcast(_overlay_state())
     return {"applied": applied}
 
 
@@ -275,7 +280,7 @@ async def undo_last_move():
         raise HTTPException(status_code=409, detail=str(exc))
     if undone is None:
         raise HTTPException(status_code=404, detail="no committed move to undo")
-    await overlay_connections.broadcast(build_overlay_state(session.game_state))
+    await overlay_connections.broadcast(_overlay_state())
     return {"undone": _score_move_to_dict(undone)}
 
 
@@ -287,14 +292,14 @@ async def set_mode(request: ModeChangeRequest):
 
 @app.get("/state")
 async def get_state():
-    return build_overlay_state(session.game_state)
+    return _overlay_state()
 
 
 @app.websocket("/ws/overlay")
 async def overlay_websocket(ws: WebSocket):
     await overlay_connections.connect(ws)
     try:
-        await ws.send_json(build_overlay_state(session.game_state))
+        await ws.send_json(_overlay_state())
         while True:
             # The overlay is a passive subscriber; we still need to await
             # incoming messages so we notice a disconnect promptly.
@@ -354,7 +359,7 @@ async def start_watching(request: WatchRequest):
             return
         try:
             asyncio.run_coroutine_threadsafe(
-                overlay_connections.broadcast(build_overlay_state(session.game_state)), loop,
+                overlay_connections.broadcast(_overlay_state()), loop,
             )
         except RuntimeError:
             # The event loop this handler was bound to is gone (server
@@ -366,9 +371,6 @@ async def start_watching(request: WatchRequest):
             pass
 
     def run() -> None:
-        watch_status.running = True
-        watch_status.events_seen = 0
-        watch_status.error = None
         try:
             run_watcher_on_video(
                 Path(request.video_path), request.venue, Path(request.classifier_path),
@@ -380,6 +382,11 @@ async def start_watching(request: WatchRequest):
         finally:
             watch_status.running = False
 
+    # Set before the thread starts so a second POST /watch arriving before
+    # the thread runs still sees a run in progress.
+    watch_status.running = True
+    watch_status.events_seen = 0
+    watch_status.error = None
     watch_status.thread = threading.Thread(target=run, daemon=True)
     watch_status.thread.start()
     return {"started": True}
@@ -403,4 +410,5 @@ async def export_gcg_endpoint():
     module docstring for why the end-of-game rack bonus/penalty line is
     deliberately not produced.
     """
-    return export_gcg(session.game_state)
+    with session.lock:
+        return export_gcg(session.game_state)

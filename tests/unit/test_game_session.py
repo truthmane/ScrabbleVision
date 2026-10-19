@@ -1,5 +1,7 @@
 from autoscorer.gamelogic.models import MoveProcessingError, ScoredMove
 from autoscorer.gamelogic.publish import PublishMode
+import threading
+
 import pytest
 
 from autoscorer.api.session import GameSession, PendingMoveExistsError
@@ -188,3 +190,41 @@ def test_undo_clears_rejected_readings():
     session.undo_last_move()
 
     assert session._rejected_signatures == set()
+
+
+def test_approve_applies_the_move_before_removing_it_from_pending():
+    """Regression test: decide() removed the move from pending before
+    applying it. The watcher, which waits for an empty pending list, could
+    wake in between and read the board from before the move."""
+    session = GameSession(mode=PublishMode.MANUAL)
+    session.submit_move("p1", new_tiles=FIRST_MOVE_TILES)
+    seen_pending_during_apply = []
+    original_apply = session.game_state.apply_move
+
+    def recording_apply(*args, **kwargs):
+        seen_pending_during_apply.append(bool(session.pending))
+        return original_apply(*args, **kwargs)
+
+    session.game_state.apply_move = recording_apply
+    session.decide(turn_number=1, action="approve")
+
+    assert seen_pending_during_apply == [True]
+    assert session.list_pending() == []
+
+
+def test_session_methods_wait_for_the_lock():
+    session = GameSession(mode=PublishMode.AUTONOMOUS)
+    finished = threading.Event()
+
+    def submit() -> None:
+        session.submit_move("p1", new_tiles=FIRST_MOVE_TILES)
+        finished.set()
+
+    with session.lock:
+        worker = threading.Thread(target=submit, daemon=True)
+        worker.start()
+        assert not finished.wait(timeout=0.2)
+        assert session.game_state.history == []
+
+    assert finished.wait(timeout=2.0)
+    assert len(session.game_state.history) == 1
