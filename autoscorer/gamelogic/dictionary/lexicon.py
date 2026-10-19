@@ -20,6 +20,7 @@ zero supporting code.
 from __future__ import annotations
 
 import gzip
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,9 +28,12 @@ from typing import Optional
 
 _DATA_DIR = Path(__file__).resolve().parent / "data"
 _DEFAULT_LEXICON_PATH = _DATA_DIR / "enable_2to15.txt.gz"
+_CSW_TWOS_SUPPLEMENT_PATH = _DATA_DIR / "csw_twos_supplement.txt"
 _LEXICONS_DIR = Path(__file__).resolve().parents[3] / "configs" / "lexicons"
 
 _ENV_VAR = "AUTOSCORER_LEXICON"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -41,6 +45,7 @@ class LexiconInfo:
     path: str
     word_count: int
     is_default: bool
+    requested: Optional[str] = None  # set when a named lexicon was missing and this is the fallback
 
 
 class Lexicon:
@@ -79,18 +84,27 @@ def _read_words(path: Path) -> frozenset:
         return frozenset(line.strip().upper() for line in f if line.strip())
 
 
+def _looks_like_path(requested: str) -> bool:
+    return os.sep in requested or "/" in requested or requested.endswith((".txt", ".gz"))
+
+
 def load_lexicon(name_or_path: Optional[str] = None) -> Lexicon:
     """Resolves and loads a lexicon, in this order:
 
-    1. `name_or_path`, if given -- either a bare name looked up under
+    1. `name_or_path`, if given. Either a bare name looked up under
        `configs/lexicons/<name>.txt` or `<name>.txt.gz`, or a direct
-       filesystem path if it points at an existing file.
+       filesystem path.
     2. The `AUTOSCORER_LEXICON` environment variable, same resolution.
-    3. `configs/lexicons/` is otherwise untouched -- gitignored, so a
-       licensed CSW21/NWL2023 drop-in (e.g. `configs/lexicons/csw24.txt`)
-       never needs to be committed to use here.
-    4. The vendored default (`data/enable_2to15.txt.gz`) -- always
-       present, always loadable, no external file required.
+    3. The vendored default (`data/enable_2to15.txt.gz`).
+
+    `configs/lexicons/` is gitignored, so a licensed list such as
+    `configs/lexicons/csw24.txt` is used when present and never committed.
+
+    A missing direct path raises `FileNotFoundError`. A missing bare name
+    logs a warning and falls back to the vendored default, so a venue
+    profile can name a licensed list that only some machines have. When
+    the missing name starts with `csw`, the fallback also includes the
+    CSW 2-letter words ENABLE lacks (`data/csw_twos_supplement.txt`).
     """
     requested = name_or_path or os.environ.get(_ENV_VAR)
     if requested:
@@ -101,20 +115,44 @@ def load_lexicon(name_or_path: Optional[str] = None) -> Lexicon:
                 if maybe.exists():
                     candidate_path = maybe
                     break
-        if not candidate_path.exists():
-            raise FileNotFoundError(
-                f"lexicon {requested!r} not found (looked in {_LEXICONS_DIR} and as a direct path)"
+        if candidate_path.exists():
+            words = _read_words(candidate_path)
+            info = LexiconInfo(
+                name=candidate_path.stem.removesuffix(".txt"),
+                path=str(candidate_path), word_count=len(words), is_default=False,
             )
-        words = _read_words(candidate_path)
-        info = LexiconInfo(
-            name=candidate_path.stem.removesuffix(".txt"),
-            path=str(candidate_path), word_count=len(words), is_default=False,
-        )
-        return Lexicon(words, info)
+            return Lexicon(words, info)
+        if _looks_like_path(requested):
+            raise FileNotFoundError(f"lexicon file {requested!r} not found")
+        return _load_fallback(requested)
 
+    return _load_default()
+
+
+def _load_default() -> Lexicon:
     words = _read_words(_DEFAULT_LEXICON_PATH)
     info = LexiconInfo(
         name="enable_2to15", path=str(_DEFAULT_LEXICON_PATH),
         word_count=len(words), is_default=True,
+    )
+    return Lexicon(words, info)
+
+
+def _load_fallback(requested: str) -> Lexicon:
+    words = _read_words(_DEFAULT_LEXICON_PATH)
+    name = "enable_2to15"
+    if requested.lower().startswith("csw"):
+        words = words | _read_words(_CSW_TWOS_SUPPLEMENT_PATH)
+        name = "enable_2to15+csw_twos"
+    logger.warning(
+        "lexicon %r not found in %s; falling back to %s (%d words). "
+        "Real %s words absent from this list will be flagged as invalid. "
+        "Drop the licensed list at %s to use it.",
+        requested, _LEXICONS_DIR, name, len(words), requested,
+        _LEXICONS_DIR / f"{requested}.txt",
+    )
+    info = LexiconInfo(
+        name=name, path=str(_DEFAULT_LEXICON_PATH), word_count=len(words),
+        is_default=True, requested=requested,
     )
     return Lexicon(words, info)

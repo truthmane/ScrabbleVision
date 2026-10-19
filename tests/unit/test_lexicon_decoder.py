@@ -172,3 +172,41 @@ def test_empty_cell_candidates_returns_a_single_empty_reading():
     assert len(readings) == 1
     assert readings[0].labels == {}
     assert readings[0].all_words_valid is True
+
+
+# --- A lexicon-absent real word must not become a blank substitution.
+# ENABLE lacks QI and ZA; the blank branch could otherwise spell AI/AA. ---
+
+def _no_qi_za_lexicon() -> Lexicon:
+    return _fake_lexicon(["AI", "AA", "AE"])
+
+
+def test_confident_q_in_qi_is_not_turned_into_a_blank():
+    candidates = [
+        CellCandidates(coord=(7, 7), candidates=[("Q", 0.80), ("BLANK", 0.15)]),
+        CellCandidates(coord=(7, 8), candidates=[("I", 0.95)]),
+    ]
+    readings = decode_with_lexicon(candidates, BoardState(), racks=[[]], lexicon=_no_qi_za_lexicon())
+    assert readings[0].labels == {(7, 7): "Q", (7, 8): "I"}
+    assert readings[0].blank_cells == frozenset()
+    assert readings[0].invalid_words == ("QI",)
+
+
+def test_confident_z_in_za_is_not_turned_into_a_blank():
+    candidates = [
+        CellCandidates(coord=(7, 7), candidates=[("Z", 0.80), ("BLANK", 0.15)]),
+        CellCandidates(coord=(7, 8), candidates=[("A", 0.95)]),
+    ]
+    readings = decode_with_lexicon(candidates, BoardState(), racks=[[]], lexicon=_no_qi_za_lexicon())
+    assert readings[0].labels == {(7, 7): "Z", (7, 8): "A"}
+    assert readings[0].blank_cells == frozenset()
+
+
+def test_blank_still_wins_when_it_is_the_top_label():
+    candidates = [
+        CellCandidates(coord=(7, 7), candidates=[("BLANK", 0.6), ("Q", 0.35)]),
+        CellCandidates(coord=(7, 8), candidates=[("I", 0.95)]),
+    ]
+    readings = decode_with_lexicon(candidates, BoardState(), racks=[[]], lexicon=_no_qi_za_lexicon())
+    assert readings[0].blank_cells == frozenset({(7, 7)})
+    assert readings[0].labels == {(7, 7): "A", (7, 8): "I"}

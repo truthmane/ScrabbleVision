@@ -104,7 +104,9 @@ class VenueProfile:
     e.g. a licensed CSW/NWL drop-in under `configs/lexicons/` for a real
     tournament's actual dictionary. `None` (the default) means "use
     whatever `load_lexicon` falls back to" (the vendored generic list),
-    not "no lexicon" -- the decoder always has one to rank against."""
+    not "no lexicon" -- the decoder always has one to rank against.
+    A bare name whose file is missing loads the vendored list with a
+    logged warning instead of failing (see `load_lexicon`)."""
     clock_regions: Optional[Tuple[ClockBox, ClockBox]] = None
     """(left_box, right_box) pixel bounds of this venue's two on-screen
     chess-clock displays in the RAW (unrectified) camera frame -- see
