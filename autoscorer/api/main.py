@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, PlainTextResponse, Response
@@ -91,7 +91,7 @@ class NotationMoveSubmission(BaseModel):
 
 
 class OperatorDecisionRequest(BaseModel):
-    action: str  # "approve" | "reject"
+    action: Literal["approve", "reject"]
 
 
 class ModeChangeRequest(BaseModel):

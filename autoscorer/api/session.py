@@ -140,6 +140,8 @@ class GameSession:
         `_rejected_signatures`) so a detector still looking at the same
         unchanged board doesn't just re-queue the identical wrong answer.
         """
+        if action not in ("approve", "reject"):
+            raise ValueError(f"action must be 'approve' or 'reject', got {action!r}")
         pending = self.pending.pop(turn_number, None)
         if pending is None:
             return None
