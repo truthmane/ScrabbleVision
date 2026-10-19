@@ -49,7 +49,11 @@ class GameSession:
         rack_after: Optional[List[RackTile]] = None,
         confidence: float = 1.0,
         source_frame_jpeg: Optional[bytes] = None,
+        require_review: bool = False,
     ) -> SubmissionResult:
+        """Validates and scores a move, then applies it or queues it for
+        operator review. `require_review=True` always queues it, in every
+        publish mode, including AUTONOMOUS."""
         game_state = self.game_state
         if player_id not in game_state.racks:
             game_state.racks[player_id] = []
@@ -117,7 +121,7 @@ class GameSession:
             move_score=result.move_score,
         )
 
-        if self.gateway.should_auto_publish(confidence):
+        if not require_review and self.gateway.should_auto_publish(confidence):
             self._apply(result, board_after, racks_after_map)
             return SubmissionResult(outcome=result, published=True)
 

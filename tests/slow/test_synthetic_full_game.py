@@ -26,7 +26,8 @@ deployed classifier's real accuracy ceiling without needing real photos.
   this case, since the blank jam fires regardless of confidence.
 - The game runs in delegated mode (`GameSession`, AUTONOMOUS) with a
   simulated operator that approves a pending move only when it exactly
-  matches the real play and rejects everything else. At `p=1.0` every
+  matches the real play, fills in the letters for the blanks of a move that
+  otherwise matches exactly, and rejects everything else. At `p=1.0` every
   committed play must also match the real play exactly, so a wrong
   partial commit (for example one tile of a blank play) fails the test.
 - At `p=0.72` (the deployed checkpoint's real measured board-tile
@@ -102,25 +103,43 @@ def _build_registry_and_boards(
     return registry, boards
 
 
-def _exactly_matches(pending: PendingMove, truth: TruthTurn) -> bool:
-    """True when a pending move is the real play: same cells, same
-    letters, and the same cells played as blanks."""
+def _matches(pending: PendingMove, truth: TruthTurn, check_blank_letters: bool) -> bool:
+    """True when a pending move has the real play's cells, the same cells
+    played as blanks, and the real letters on every non-blank cell. Blank
+    letters are compared only when `check_blank_letters` is set."""
     new_cells = pending.scored_move.candidate.new_cells
     if frozenset(new_cells) != truth.cells:
         return False
     for coord in new_cells:
         tile = pending.board_after.get(coord)
-        if tile is None or tile.letter != truth.letters[coord] or tile.is_blank != (coord in truth.blank_cells):
+        is_blank = coord in truth.blank_cells
+        if tile is None or tile.is_blank != is_blank:
+            return False
+        if (check_blank_letters or not is_blank) and tile.letter != truth.letters[coord]:
             return False
     return True
 
 
-def _simulated_operator(session: GameSession, truth: TruthTurn) -> None:
-    """Approves a pending move only if it exactly matches the real play
-    currently on the board, and rejects everything else."""
+def _simulated_operator(session: GameSession, truth: TruthTurn, player: str) -> None:
+    """Reviews every pending move against the real play on the board.
+
+    Approves an exact match. For a move that matches except for the
+    letters chosen for its blanks, rejects it and enters the play with the
+    real blank letters, the way an operator confirms what a blank was
+    played as. Rejects everything else, including any fragment of the
+    real play."""
     for pending in session.list_pending():
         turn_number = pending.scored_move.candidate.turn_number
-        session.decide(turn_number, "approve" if _exactly_matches(pending, truth) else "reject")
+        if _matches(pending, truth, check_blank_letters=True):
+            session.decide(turn_number, "approve")
+        elif _matches(pending, truth, check_blank_letters=False):
+            session.decide(turn_number, "reject")
+            new_tiles = [
+                (coord, truth.letters[coord], coord in truth.blank_cells) for coord in sorted(truth.cells)
+            ]
+            session.submit_move(player, new_tiles=new_tiles)
+        else:
+            session.decide(turn_number, "reject")
 
 
 def _run_game(p: float, seed: int) -> Tuple[GameSession, List[TruthTurn], List[int]]:
@@ -151,7 +170,7 @@ def _run_game(p: float, seed: int) -> Tuple[GameSession, List[TruthTurn], List[i
         used = 0
         for _ in range(MAX_OBSERVATIONS_PER_TURN):
             watcher.observe_board_frame(board_image.copy(), player_id=player)
-            _simulated_operator(session, truth)
+            _simulated_operator(session, truth, player)
             used += 1
             if watcher.turn_number > turn_before:
                 break
