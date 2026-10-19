@@ -165,3 +165,26 @@ def test_turn_number_matches_committed_move_count_after_reject_and_undo():
     session.undo_last_move()
     redo = session.submit_move("p2", new_tiles=[((7, 9), "E", False)])
     assert redo.outcome.candidate.turn_number == 2
+
+
+def test_operator_typed_move_is_not_blocked_by_an_earlier_rejection():
+    session = GameSession(mode=PublishMode.MANUAL)
+    session.submit_move("p1", new_tiles=FIRST_MOVE_TILES)
+    session.decide(turn_number=1, action="reject")
+
+    result = session.submit_move("p1", new_tiles=FIRST_MOVE_TILES, check_rejected=False)
+
+    assert isinstance(result.outcome, ScoredMove)
+    assert len(session.list_pending()) == 1
+
+
+def test_undo_clears_rejected_readings():
+    session = GameSession(mode=PublishMode.AUTONOMOUS)
+    session.submit_move("p1", new_tiles=FIRST_MOVE_TILES)
+    session.set_mode(PublishMode.MANUAL)
+    session.submit_move("p2", new_tiles=[((7, 9), "S", False)])
+    session.decide(turn_number=2, action="reject")
+
+    session.undo_last_move()
+
+    assert session._rejected_signatures == set()

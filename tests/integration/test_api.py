@@ -269,3 +269,13 @@ def test_undo_endpoint_409s_while_a_move_is_pending(client):
     resp = client.post("/moves/undo")
 
     assert resp.status_code == 409
+
+
+def test_manual_submission_is_not_blocked_by_an_earlier_rejection(client):
+    client.post("/moves", json={"player_id": "p1", "new_tiles": FIRST_MOVE_TILES})
+    client.post("/pending/1/decision", json={"action": "reject"})
+
+    resp = client.post("/moves", json={"player_id": "p1", "new_tiles": FIRST_MOVE_TILES})
+
+    assert resp.status_code == 200
+    assert len(client.get("/pending").json()) == 1

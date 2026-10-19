@@ -52,7 +52,16 @@ class GameSession:
         rack_after: Optional[List[RackTile]] = None,
         confidence: float = 1.0,
         source_frame_jpeg: Optional[bytes] = None,
+        check_rejected: bool = True,
     ) -> SubmissionResult:
+        """Scores a move and either applies it or queues it for review.
+
+        `check_rejected` refuses a reading identical to one an operator
+        already rejected. The watcher leaves it on so it doesn't re-queue
+        the same misreading of an unchanged board. Operator-typed
+        submissions turn it off: an operator entering a move is a
+        deliberate decision, even if it matches an earlier rejection.
+        """
         game_state = self.game_state
         if player_id not in game_state.racks:
             game_state.racks[player_id] = []
@@ -71,15 +80,14 @@ class GameSession:
                 published=False,
             )
 
-        if new_tiles and self._signature(player_id, new_tiles) in self._rejected_signatures:
+        if check_rejected and new_tiles and self._signature(player_id, new_tiles) in self._rejected_signatures:
             # Identical cells + letters + player as something an operator
-            # already rejected -- don't re-queue it, since nothing about the input changed and re-offering it
-            # is just noise (see the module-level note on
-            # `_rejected_signatures`). A caller detecting moves from an
-            # unchanging board will keep hitting this until either the
-            # board genuinely changes or the operator corrects it another
-            # way (e.g. the notation endpoint), at which point the new
-            # signature won't match and this stops applying.
+            # already rejected -- don't re-queue it, since nothing about
+            # the input changed (see the note on `_rejected_signatures` in
+            # __init__). A caller detecting moves from an unchanging board
+            # will keep hitting this until the board genuinely changes or
+            # the operator corrects it another way (an operator-typed
+            # move, or undo, which clears the set).
             return SubmissionResult(
                 outcome=MoveProcessingError(
                     reason="identical to a previously rejected reading; not re-queuing until the board changes",
@@ -185,7 +193,12 @@ class GameSession:
             raise PendingMoveExistsError(
                 f"turn {min(self.pending)} is awaiting operator review; approve or reject it first",
             )
-        return self.game_state.undo_last()
+        undone = self.game_state.undo_last()
+        if undone is not None:
+            # The board changed, so earlier rejections may no longer
+            # describe a misreading. Let the watcher offer them again.
+            self._rejected_signatures.clear()
+        return undone
 
     def list_pending(self) -> List[PendingMove]:
         return [self.pending[k] for k in sorted(self.pending)]

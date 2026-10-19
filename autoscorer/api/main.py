@@ -153,6 +153,7 @@ async def submit_move(submission: MoveSubmission):
 
     result = session.submit_move(
         submission.player_id, new_tiles=new_tiles, rack_after=rack_after, confidence=submission.confidence,
+        check_rejected=False,
     )
 
     if isinstance(result.outcome, MoveProcessingError):
@@ -194,7 +195,9 @@ async def submit_move_notation(submission: NotationMoveSubmission):
         else:
             r += 1
 
-    result = session.submit_move(submission.player_id, new_tiles=new_tiles, confidence=submission.confidence)
+    result = session.submit_move(
+        submission.player_id, new_tiles=new_tiles, confidence=submission.confidence, check_rejected=False,
+    )
 
     if isinstance(result.outcome, MoveProcessingError):
         raise HTTPException(status_code=422, detail=result.outcome.reason)
