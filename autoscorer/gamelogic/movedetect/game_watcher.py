@@ -1116,16 +1116,18 @@ class GameWatcher:
         force_operator: bool = False,
         force_operator_reason: str = "",
         source_frame: Optional[np.ndarray] = None,
-    ) -> WatcherEvent:
+    ) -> Union[WatcherEvent, Tuple[str, Tuple[Coord, ...]]]:
         """The delegated-mode path: hands the decoded reading to
         `GameSession.submit_move` -- the same call a human operator's
         typed-in move already goes through -- instead of this class
         re-implementing scoring/gateway/apply bookkeeping a second time.
-        Placement validity and the pool invariant were already checked by
-        the caller before reaching here (against `self.board`, the same
-        board `submit_move` will use), so `MoveProcessingError` shouldn't
-        normally trigger -- handled anyway since `submit_move`'s contract
-        allows it.
+
+        A `MoveProcessingError` from `submit_move` (most often a reading
+        the operator already rejected) is returned as a `(reason, cells)`
+        failure, the same shape `_attempt_commit` uses for its own
+        failures. The commit loop then tries the remaining candidates and
+        clusters and counts the failure toward quarantine and the stall
+        watchdog.
 
         `publish_confidence`, if lower than `move_confidence`, forces the
         session's own gateway to deny auto-publish (a truncated or
@@ -1140,9 +1142,7 @@ class GameWatcher:
         )
 
         if isinstance(result.outcome, MoveProcessingError):
-            return WatcherEvent(
-                state=self.state, confidence=move_confidence, needs_operator=True, reason=result.outcome.reason,
-            )
+            return result.outcome.reason, tuple(sorted(decoded))
 
         self.state = WatcherState.APPLIED if result.published else WatcherState.SCORED
         turn_number = result.outcome.candidate.turn_number

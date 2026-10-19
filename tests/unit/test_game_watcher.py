@@ -1322,3 +1322,28 @@ def test_delegated_mode_record_rack_exchange_goes_through_session_submit_move(tm
     assert event.scored_move.candidate.move_type == MoveType.EXCHANGE
     assert [t.letter for t in session.game_state.racks["p1"]] == ["N", "A", "N"]
     assert len(session.game_state.history) == 1
+
+
+def test_delegated_mode_a_rejected_reading_does_not_block_other_clusters(tmp_path):
+    """Regression test: when `session.submit_move` refused a reading the
+    operator had already rejected, the watcher treated the refusal as a
+    successful commit. It stopped searching, so an independent cluster
+    elsewhere on the board was never proposed."""
+    classifier = _train_tiny_classifier(tmp_path)
+    session = GameSession(mode=PublishMode.MANUAL)
+    session.game_state.board = BoardState({(7, 7): Tile("A"), (0, 5): Tile("N")})
+    watcher = _make_session_watcher(classifier, session)
+    rng = random.Random(11)
+
+    frame = _blank_board_image()
+    _place_tile(frame, 7, 8, "T", rng)
+    _place_tile(frame, 0, 6, "T", rng)
+
+    proposed = set()
+    for _ in range(60):
+        watcher.observe_board_frame(frame.copy(), player_id="p1")
+        for pending in session.list_pending():
+            proposed.update(pending.scored_move.candidate.new_cells)
+            session.decide(pending.scored_move.candidate.turn_number, "reject")
+
+    assert proposed == {(7, 8), (0, 6)}
