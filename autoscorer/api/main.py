@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from autoscorer.api.session import GameSession
+from autoscorer.api.session import GameSession, PendingMoveExistsError
 from autoscorer.gamelogic.board import BOARD_SIZE, CENTER, PREMIUM_SQUARES
 from autoscorer.gamelogic.models import MoveProcessingError, ScoredMove
 from autoscorer.gamelogic.notation import export_gcg, parse_position
@@ -266,7 +266,10 @@ async def undo_last_move():
     repeatedly back to it, then resubmit the moves in between (see
     `GameState.undo_last`'s docstring for why an arbitrary earlier turn
     isn't supported)."""
-    undone = session.undo_last_move()
+    try:
+        undone = session.undo_last_move()
+    except PendingMoveExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     if undone is None:
         raise HTTPException(status_code=404, detail="no committed move to undo")
     await overlay_connections.broadcast(build_overlay_state(session.game_state))

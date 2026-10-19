@@ -25,6 +25,10 @@ class SubmissionResult:
     published: bool  # True if applied immediately, False if queued for operator review
 
 
+class PendingMoveExistsError(RuntimeError):
+    """Raised by `GameSession.undo_last_move` while a move awaits review."""
+
+
 class GameSession:
     def __init__(self, mode: PublishMode = PublishMode.MANUAL) -> None:
         self.game_state = GameState()
@@ -53,6 +57,20 @@ class GameSession:
         game_state = self.game_state
         if player_id not in game_state.racks:
             game_state.racks[player_id] = []
+
+        if self.pending:
+            # A pending move's board_after and score were computed against
+            # the board at its own submit time. Accepting a second move now
+            # would compute it against that same board, and approving both
+            # would overwrite the first move's tiles while keeping its
+            # score. Only one move may await review at a time.
+            waiting = min(self.pending)
+            return SubmissionResult(
+                outcome=MoveProcessingError(
+                    reason=f"turn {waiting} is awaiting operator review; approve or reject it first",
+                ),
+                published=False,
+            )
 
         if new_tiles and self._signature(player_id, new_tiles) in self._rejected_signatures:
             # Identical cells + letters + player as something an operator
@@ -162,7 +180,15 @@ class GameSession:
 
     def undo_last_move(self) -> Optional[ScoredMove]:
         """Reverts the most recently committed move -- see
-        `GameState.undo_last` for exactly what this can and can't do."""
+        `GameState.undo_last` for exactly what this can and can't do.
+
+        Raises `PendingMoveExistsError` while a move awaits review, since
+        that move's board_after was built on top of the move undo would
+        remove."""
+        if self.pending:
+            raise PendingMoveExistsError(
+                f"turn {min(self.pending)} is awaiting operator review; approve or reject it first",
+            )
         return self.game_state.undo_last()
 
     def list_pending(self) -> List[PendingMove]:

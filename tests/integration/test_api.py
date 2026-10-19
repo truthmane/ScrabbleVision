@@ -258,3 +258,14 @@ def test_watch_endpoint_drives_the_live_session_from_a_video(client, tmp_path, m
     state = client.get("/state").json()
     assert state["scores"]["Alice"] == 2
     assert client.get("/pending").json() == []
+
+
+def test_undo_endpoint_409s_while_a_move_is_pending(client):
+    client.post("/mode", json={"mode": "AUTONOMOUS"})
+    client.post("/moves", json={"player_id": "p1", "new_tiles": FIRST_MOVE_TILES})
+    client.post("/mode", json={"mode": "MANUAL"})
+    client.post("/moves", json={"player_id": "p2", "new_tiles": [{"row": 7, "col": 9, "letter": "S"}]})
+
+    resp = client.post("/moves/undo")
+
+    assert resp.status_code == 409

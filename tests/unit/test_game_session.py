@@ -1,6 +1,8 @@
 from autoscorer.gamelogic.models import MoveProcessingError, ScoredMove
 from autoscorer.gamelogic.publish import PublishMode
-from autoscorer.api.session import GameSession
+import pytest
+
+from autoscorer.api.session import GameSession, PendingMoveExistsError
 
 FIRST_MOVE_TILES = [((7, 6), "A", False), ((7, 7), "N", False), ((7, 8), "T", False)]
 
@@ -114,3 +116,34 @@ def test_rejected_reading_is_not_re_queued_until_the_board_changes():
     different_tiles = [((7, 6), "A", False), ((7, 7), "N", False), ((7, 8), "D", False)]
     different_result = session.submit_move("p1", new_tiles=different_tiles)
     assert not isinstance(different_result.outcome, MoveProcessingError)
+
+
+def test_second_submission_is_refused_while_a_move_is_pending():
+    """Regression test: two pending moves were each scored against the
+    board at submit time. Approving both left only the second move's tiles
+    on the board while the first move's score stayed credited."""
+    session = GameSession(mode=PublishMode.MANUAL)
+    session.submit_move("p1", new_tiles=[((7, 7), "H", False), ((7, 8), "I", False)])
+
+    second = session.submit_move("p2", new_tiles=[((7, 7), "A", False), ((8, 7), "T", False)])
+
+    assert isinstance(second.outcome, MoveProcessingError)
+    assert len(session.list_pending()) == 1
+
+    session.decide(turn_number=1, action="approve")
+    assert session.game_state.board.get((7, 7)).letter == "H"
+    assert session.game_state.board.get((7, 8)).letter == "I"
+
+    third = session.submit_move("p2", new_tiles=[((8, 7), "A", False)])
+    assert isinstance(third.outcome, ScoredMove)
+
+
+def test_undo_is_refused_while_a_move_is_pending():
+    session = GameSession(mode=PublishMode.AUTONOMOUS)
+    session.submit_move("p1", new_tiles=FIRST_MOVE_TILES)
+    session.set_mode(PublishMode.MANUAL)
+    session.submit_move("p2", new_tiles=[((7, 9), "S", False)])
+
+    with pytest.raises(PendingMoveExistsError):
+        session.undo_last_move()
+    assert len(session.game_state.history) == 1
